@@ -1,0 +1,29 @@
+== Part 18 single topic (xc12_3090.log, RESULT main), policies n=7
+   C1@0.25/nvme|aio=1+uf=1+up=1+bg=0+ram=0: mass 0.110133  dppl_pct 1.764522
+   C1@0.25/nvme|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1: mass 0.103667  dppl_pct 1.554698
+   C1@0.25/nvme|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1+rb=0.5: mass 0.077911  dppl_pct 1.004200
+   C@0.25/nvme:0.15|aio=1+uf=1+up=1+bg=0+ram=0: mass 0.097784  dppl_pct 1.209451
+   C@0.25/nvme:0.15|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1: mass 0.093021  dppl_pct 0.944282
+   C@0.25/nvme:0.15|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1+rb=0.5: mass 0.071705  dppl_pct 0.665701
+   C@0.25/nvme:0.15|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1+rb=1: mass 0.080234  dppl_pct 0.946768
+   Pearson r=0.9177  Fisher 95% [0.5329, 0.9880]
+   OLS slope (dppl points per 0.01 mass)=0.2455  leave-one-out 0.2081..0.2684
+   Spearman=0.8571
+   chunks=4  within-chunk slope=0.2331  bootstrap 95% [0.1996, 0.3116]
+   per-chunk Spearman: 0.7857, 0.8929, 0.8214, 0.9286  (min 0.7857, max 0.9286)
+   correlation of chunk means (between inputs)=-0.2088
+   per-policy correlation across chunks: -0.0627, -0.0180, -0.4448, -0.1490, -0.2472, -0.2401, -0.2377  (min -0.4448, max -0.0180)
+== Part 19 topic change (xc13_3090.log, RESULT cross24), policies n=6
+   C1@0.25/nvme|aio=1+uf=1+up=1+bg=0+ram=0: mass 0.160044  dppl_pct 3.273809
+   C1@0.25/nvme|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1: mass 0.158674  dppl_pct 3.016843
+   C1@0.25/nvme|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1+rb=0.5: mass 0.092867  dppl_pct 1.461658
+   C@0.25/nvme:0.15|aio=1+uf=1+up=1+bg=0+ram=0: mass 0.133713  dppl_pct 1.769225
+   C@0.25/nvme:0.15|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1: mass 0.132742  dppl_pct 1.671503
+   C@0.25/nvme:0.15|aio=1+uf=1+up=1+bg=0+ram=0+fe=0.0078125+dk=1+rb=0.5: mass 0.085130  dppl_pct 0.971194
+   Pearson r=0.9088  Fisher 95% [0.3705, 0.9901]
+   OLS slope (dppl points per 0.01 mass)=0.2598  leave-one-out 0.2190..0.2964
+   Spearman=1.0000
+   chunks=8  within-chunk slope=0.2635  bootstrap 95% [0.1960, 0.3163]
+   per-chunk Spearman: 0.9429, 1.0000, 0.8286, 0.9429, 0.9429, 0.8286, 0.9429, 0.9429  (min 0.8286, max 1.0000)
+   correlation of chunk means (between inputs)=-0.3179
+   per-policy correlation across chunks: -0.2943, -0.0463, -0.2994, -0.0732, -0.2474, -0.2636  (min -0.2994, max -0.0463)

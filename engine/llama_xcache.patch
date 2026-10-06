@@ -1,0 +1,2951 @@
+diff --git a/include/llama.h b/include/llama.h
+index dea4d46..152aa84 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -1732,6 +1732,59 @@ extern "C" {
+             ggml_opt_epoch_callback   callback_train,
+             ggml_opt_epoch_callback   callback_eval);
+ 
++    //
++    // Expert cache (experimental, enabled with env LLAMA_XCACHE=1 at context creation)
++    //
++
++    struct llama_xcache_stats {
++        double  stall_ms;        // time spent waiting for expert loads
++        double  wait_pending_ms; // part of stall spent on loads already in flight
++        double  cb_ms;           // time spent in the routing callback
++        int64_t n_tok;
++        int64_t n_want;
++        int64_t n_hit;
++        int64_t n_sub;
++        int64_t n_urg;
++        int64_t n_bg;
++        int64_t n_cancel;
++        int64_t n_drop;
++        int64_t n_steal;
++        int64_t bytes;
++        int64_t n_skip;          // misses not admitted for background loading
++        // prompt processing since llama_xcache_begin_prompt (prompt streaming, option ps=1)
++        double  pf_ms;           // time spent loading experts for the prompt
++        int64_t pf_read_bytes;   // bytes read from the file
++        int64_t pf_d2d_bytes;    // bytes copied on the device (resident experts into the staging area, staging into slots)
++        int64_t pf_ram_bytes;    // bytes copied from the page cache instead of read from the file (option ram)
++        int64_t pf_used;         // distinct experts used, summed over layers and ubatches
++        int64_t pf_pre;          // experts read ahead for the next layer (option pso)
++        int64_t pf_pre_hit;      // of those, used
++        double  ram_frac;        // option ram=2: resident fraction of the expert pages at the last decision (-1 if never decided)
++        int32_t ram_on;          // page cache source in effect
++        double  mass;            // substituted gate weight (normalized over the router's experts), summed over layer-tokens
++        int64_t n_ltok;          // layer-tokens of decode
++    };
++
++    LLAMA_API bool    llama_xcache_enabled     (struct llama_context * ctx);
++    // call before prompt processing: records which experts the prompt uses
++    LLAMA_API void    llama_xcache_begin_prompt(struct llama_context * ctx);
++    // mode: "ideal", "ideal_sync", "exact", "C", "B"; src: "nvme" or "ram"; tau > 1 means wait only for the rank-1 expert
++    LLAMA_API int32_t llama_xcache_configure   (struct llama_context * ctx, const char * mode, float frac, const char * src, float tau);
++    LLAMA_API void    llama_xcache_get_stats   (struct llama_context * ctx, struct llama_xcache_stats * out);
++    // options, "key=value+key=value": aio, uf, up, adm, sbg, bg, ef, ps, fresh (0/1), lam (LRFU decay per token), pf (prefill read-ahead layers),
++    // pso (prompt streaming: read the next layer ahead when this fraction of a layer's experts was used),
++    // ram (1, default: copy experts that are in the page cache from memory, read the others from the file; 0: always read the file;
++    //      2: auto, as 1 when at least ramthr (default 0.5) of the expert pages are in the page cache, else 0)
++    // ps=1: prompt processing reads only the experts the prompt uses, straight into device memory (allocates a staging area of one layer)
++    // fe (frequency score: EMA weight per token, scored from every prompt use; the initial set is the best-scored experts),
++    // dk=1 (only the router's experts count as uses), rb / rh / rq (rent-or-buy admission: a substituted expert accumulates its
++    // gate weight with half-life rh tokens, default 512, and is read in the background once it reaches rb; at most rq reads in
++    // flight per layer, default 8)
++    // env LLAMA_XCACHE_CAPS: one weight per MoE layer, slots per layer in that proportion at the same total device memory
++    LLAMA_API int32_t llama_xcache_set_opts    (struct llama_context * ctx, const char * opts);
++    // drop the host copies of the expert weights from memory (mapping + page cache), to measure a cold start
++    LLAMA_API void    llama_xcache_evict_host  (struct llama_context * ctx);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index afdaddc..ded1e07 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -18,6 +18,7 @@ set(LLAMA_CORE_SOURCES
+     llama-cparams.cpp
+     llama-grammar.cpp
+     llama-graph.cpp
++    llama-xcache.cpp
+     llama-hparams.cpp
+     llama-impl.cpp
+     llama-io.cpp
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 87bb3cc..93db347 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-context.h"
++#include "llama-xcache.h"
+ 
+ #include "ggml.h"
+ #include "llama-arch.h"
+@@ -459,6 +460,22 @@ llama_context::llama_context(
+             LLAMA_LOG_INFO("%s: pipeline parallelism enabled\n", __func__);
+         }
+ 
++        // expert cache (experimental)
++        if (const char * xc_env = getenv("LLAMA_XCACHE"); xc_env && atoi(xc_env) != 0) {
++            const char * path = getenv("LLAMA_XCACHE_GGUF");
++            const char * frac = getenv("LLAMA_XCACHE_FRAC_MAX");
++            if (!path) {
++                throw std::runtime_error("LLAMA_XCACHE needs LLAMA_XCACHE_GGUF (path of the model file)");
++            }
++            xcache = std::make_unique<llama_xcache>(model, path, frac ? (float) atof(frac) : 0.25f);
++            for (auto & b : backends) {
++                if (ggml_backend_get_device(b.get()) == xcache->pool_dev) {
++                    xcache->be = b.get();
++                }
++            }
++            xcache_update_cb();
++        }
++
+         sched_reserve();
+ 
+         if (!cparams.flash_attn) {
+@@ -1424,6 +1441,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+ 
+         //const auto t_start_us = ggml_time_us();
+ 
++        if (xcache) {
++            xcache->begin_graph();
++        }
++
+         gf = model.build_graph(gparams);
+ 
+         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+@@ -1884,6 +1905,10 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ 
+         const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
+ 
++        if (res && xcache) {
++            xcache->ubatch_done((int) ubatch.n_tokens);
++        }
++
+         if (!res) {
+             // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
+             llama_pos pos_min[LLAMA_MAX_SEQ];
+@@ -2562,6 +2587,7 @@ llm_graph_params llama_context::graph_params(
+         /*.n_outputs   =*/ n_outputs,
+         /*.cb          =*/ graph_get_cb(),
+         /*.res         =*/ res,
++        /*.xcache      =*/ xcache.get(),
+     };
+ }
+ 
+@@ -4448,3 +4474,93 @@ llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * c
+ llama_context * llama_get_ctx_other(struct llama_context * ctx) {
+     return ctx->get_cparams().ctx_other;
+ }
++
++//
++// expert cache
++//
++
++void llama_context::xcache_update_cb() {
++    if (xcache && xcache->want_callback()) {
++        cparams.cb_eval           = llama_xcache::eval_cb;
++        cparams.cb_eval_user_data = xcache.get();
++    } else {
++        cparams.cb_eval           = nullptr;
++        cparams.cb_eval_user_data = nullptr;
++    }
++    if (sched) {
++        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
++    }
++}
++
++void llama_context::xcache_reset_graphs() {
++    // the prompt graph changes with the prompt streaming option
++    for (auto & res : gf_res_prev) {
++        if (res) {
++            res->reset();
++        }
++    }
++    gf_res_prev_active = nullptr;
++}
++
++bool llama_xcache_enabled(llama_context * ctx) {
++    return ctx->xcache != nullptr;
++}
++
++void llama_xcache_begin_prompt(llama_context * ctx) {
++    if (!ctx->xcache) {
++        return;
++    }
++    ctx->synchronize();
++    ctx->xcache->begin_prompt();
++    ctx->xcache_update_cb();
++}
++
++int32_t llama_xcache_configure(llama_context * ctx, const char * mode, float frac, const char * src, float tau) {
++    if (!ctx->xcache) {
++        return -1;
++    }
++    const std::string m = mode ? mode : "exact";
++    int im;
++    if      (m == "ideal")      { im = LLAMA_XC_IDEAL; }
++    else if (m == "ideal_sync") { im = LLAMA_XC_IDEAL_SYNC; }
++    else if (m == "exact")      { im = LLAMA_XC_EXACT; }
++    else if (m == "C")          { im = LLAMA_XC_C; }
++    else if (m == "B")          { im = LLAMA_XC_B; }
++    else { return -2; }
++    const int is = (src && std::string(src) == "ram") ? LLAMA_XC_SRC_RAM : LLAMA_XC_SRC_NVME;
++    ctx->synchronize();
++    const int32_t r = ctx->xcache->configure(im, frac, is, tau);
++    ctx->xcache_update_cb();
++    return r;
++}
++
++int32_t llama_xcache_set_opts(llama_context * ctx, const char * opts) {
++    if (!ctx->xcache) {
++        return -1;
++    }
++    ctx->synchronize();
++    const bool ps_old = ctx->xcache->prefill_stream();
++    ctx->xcache->set_opts(opts);
++    if (ctx->xcache->prefill_stream() != ps_old) {
++        ctx->xcache_reset_graphs();
++    }
++    ctx->xcache_update_cb();
++    return 0;
++}
++
++void llama_xcache_evict_host(llama_context * ctx) {
++    if (!ctx->xcache) {
++        return;
++    }
++    ctx->synchronize();
++    ctx->xcache->evict_host();
++}
++
++void llama_xcache_get_stats(llama_context * ctx, llama_xcache_stats * out) {
++    if (!ctx->xcache) {
++        *out = {};
++        return;
++    }
++    ctx->synchronize();
++    ctx->xcache->get_stats(out);
++}
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 35a7071..6532193 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -58,6 +58,11 @@ struct llama_context {
+ 
+     void synchronize();
+ 
++    // expert cache (experimental)
++    std::unique_ptr<struct llama_xcache> xcache;
++    void xcache_update_cb();
++    void xcache_reset_graphs();
++
+     const llama_model   & get_model()   const;
+     const llama_cparams & get_cparams() const;
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index d398ee1..7fa231e 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-graph.h"
++#include "llama-xcache.h"
+ 
+ #include "llama-impl.h"
+ #include "llama-model.h"
+@@ -1493,6 +1494,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
+     samplers         (params.samplers),
+     cb_func          (params.cb),
+     res              (params.res),
++    xcache           (params.xcache),
+     ctx0             (res->get_ctx()),
+     gf               (res->get_gf()) {
+         res->set_params(params);
+@@ -2160,9 +2162,54 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(weights, "ffn_moe_weights_scaled", il);
+     }
+ 
++    // expert cache: decode reads experts from per-layer slot pools
++    const bool xc_on  = xcache && xcache->layer_on(il) && !cparams.warmup && logits != nullptr &&
++                        gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX && exp_probs_b == nullptr &&
++                        hparams.n_expert_groups <= 1 && selected_experts_in == nullptr && !weight_before_ffn &&
++                        !up_exps_b && !gate_exps_b && !down_exps_b && !gate_up_exps_b &&
++                        !up_exps_s && !gate_exps_s && !down_exps_s && n_expert == hparams.n_expert;
++    ggml_tensor * ids_mm = selected_experts;
++    if (xc_on && n_tokens > 1) {
++        xcache->hook_prefill(il, selected_experts);
++    }
++    const bool xc_dec = xc_on && n_tokens == 1;
++    if (xc_dec) {
++        ggml_set_output(logits);
++        xcache->hook_decode(il, logits, selected_experts, weights, norm_w, w_scale);
++    }
++
+     //call early so that topk-moe can be used
+     ggml_build_forward_expand(gf, weights);
+ 
++    if (xc_dec) {
++        ggml_tensor * sids = ggml_get_rows(ctx0, xcache->get_slot_map(il), selected_experts); // [1, n_expert_used, 1]
++        ids_mm = ggml_reshape_2d(ctx0, sids, n_expert_used, n_tokens);
++        cb(ids_mm, "ffn_moe_slot_ids", il);
++        if (gate_up_exps) {
++            gate_up_exps = xcache->get_pool(il, gate_up_exps);
++            GGML_ASSERT(gate_up_exps);
++        } else {
++            up_exps   = xcache->get_pool(il, up_exps);
++            gate_exps = gate_exps ? xcache->get_pool(il, gate_exps) : nullptr;
++            GGML_ASSERT(up_exps);
++        }
++        down_exps = xcache->get_pool(il, down_exps);
++        GGML_ASSERT(down_exps);
++    }
++    if (xc_on && n_tokens > 1 && xcache->prefill_stream()) {
++        // prompt streaming: the routing callback fills a device staging area with the experts this ubatch uses
++        if (gate_up_exps) {
++            gate_up_exps = xcache->get_stage(il, gate_up_exps);
++            GGML_ASSERT(gate_up_exps);
++        } else {
++            up_exps   = xcache->get_stage(il, up_exps);
++            gate_exps = gate_exps ? xcache->get_stage(il, gate_exps) : nullptr;
++            GGML_ASSERT(up_exps);
++        }
++        down_exps = xcache->get_stage(il, down_exps);
++        GGML_ASSERT(down_exps);
++    }
++
+     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
+ 
+     if (weight_before_ffn) {
+@@ -2177,7 +2224,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+ 
+     if (gate_up_exps) {
+         // merged gate_up path: one mul_mat_id, then split into gate and up views
+-        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, selected_experts, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
++        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, ids_mm, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
+         cb(gate_up, "ffn_moe_gate_up", il);
+ 
+         if (up_exps_s) {
+@@ -2196,7 +2243,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(up, "ffn_moe_up", il);
+     } else {
+         // separate gate and up path
+-        up = build_lora_mm_id(up_exps, cur, selected_experts, up_exps_s); // [n_ff, n_expert_used, n_tokens]
++        up = build_lora_mm_id(up_exps, cur, ids_mm, up_exps_s); // [n_ff, n_expert_used, n_tokens]
+         cb(up, "ffn_moe_up", il);
+ 
+         if (up_exps_s) {
+@@ -2209,7 +2256,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         }
+ 
+         if (gate_exps) {
+-            cur = build_lora_mm_id(gate_exps, cur, selected_experts, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
++            cur = build_lora_mm_id(gate_exps, cur, ids_mm, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
+             cb(cur, "ffn_moe_gate", il);
+         } else {
+             cur = up;
+@@ -2310,7 +2357,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+             GGML_ABORT("fatal error");
+     }
+ 
+-    experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s); // [n_embd, n_expert_used, n_tokens]
++    experts = build_lora_mm_id(down_exps, cur, ids_mm, down_exps_s); // [n_embd, n_expert_used, n_tokens]
+     if (arch == LLM_ARCH_MISTRAL4) {
+         // src1 can exceed F16 range
+         ggml_prec_set_src(experts, GGML_PREC_F32, 1);
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 3daa425..7fc0f66 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -20,6 +20,7 @@ struct ggml_tensor;
+ struct llama_cparams;
+ struct llama_layer;
+ struct llama_prec_policy;
++struct llama_xcache;
+ 
+ struct llama_memory_context_i;
+ 
+@@ -813,6 +814,8 @@ struct llm_graph_params {
+ 
+     llm_graph_result * res;
+ 
++    llama_xcache * xcache = nullptr;
++
+     // return true if the "other" params would result in a graph with the same topology as with the current params
+     //   having the same topology allows us to reuse the graph in some cases
+     bool allow_reuse(const llm_graph_params & other) const {
+@@ -1038,6 +1041,8 @@ struct llm_graph_context {
+ 
+     llm_graph_result * res;
+ 
++    llama_xcache * xcache;
++
+     ggml_context * ctx0 = nullptr;
+     ggml_cgraph  * gf   = nullptr;
+ 
+diff --git a/src/llama-xcache.cpp b/src/llama-xcache.cpp
+new file mode 100644
+index 0000000..5d37904
+--- /dev/null
++++ b/src/llama-xcache.cpp
+@@ -0,0 +1,1619 @@
++#include "llama-xcache.h"
++
++#include "llama.h"
++#include "llama-impl.h"
++#include "llama-model.h"
++
++#include "gguf.h"
++
++#include <algorithm>
++#include <chrono>
++#include <cmath>
++#include <cstring>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <stdexcept>
++#include <thread>
++#include <unistd.h>
++
++enum { XC_QUEUED = 0, XC_RUNNING = 1, XC_DONE = 2, XC_CANCELLED = 3 };
++enum { XC_HOOK_DECODE = 0, XC_HOOK_PREFILL = 1 };
++
++static constexpr int    XC_N_URG = 12;
++static constexpr int    XC_N_BG  = 4;
++static constexpr size_t XC_ALIGN = 4096;
++
++struct llama_xc_job {
++    int il;
++    int e;
++    int slot;
++    std::atomic<int> st{XC_QUEUED};
++};
++
++static double xc_now_ms() {
++    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++llama_xcache::llama_xcache(const llama_model & model, const char * gguf_path, float frac_max) {
++    const auto & hp = model.hparams;
++    n_expert = (int) hp.n_expert;
++    n_used   = (int) hp.n_expert_used();
++    cap_max  = std::min(n_expert, std::max(n_used + 1, (int) std::lround(frac_max * n_expert)));
++    cap      = cap_max;
++
++    const int n_layer = (int) hp.n_layer();
++    layers.resize(n_layer);
++
++    // file offsets of the expert tensors
++    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
++    gguf_context * g = gguf_init_from_file(gguf_path, gp);
++    if (!g) {
++        throw std::runtime_error(std::string("xcache: cannot read gguf ") + gguf_path);
++    }
++    const size_t data_off = gguf_get_data_offset(g);
++
++    ggml_backend_buffer_type_t buft = nullptr;
++    int n_pool_tensors = 0;
++    for (int il = 0; il < n_layer; ++il) {
++        const auto & ly = model.layers[il];
++        if (!ly.ffn_gate_inp || !ly.ffn_down_exps) {
++            continue;
++        }
++        auto & L = layers[il];
++        std::vector<ggml_tensor *> src;
++        if (ly.ffn_gate_up_exps) {
++            src = { ly.ffn_gate_up_exps, ly.ffn_down_exps };
++        } else {
++            src = { ly.ffn_gate_exps, ly.ffn_up_exps, ly.ffn_down_exps };
++        }
++        bool ok = true;
++        for (auto * t : src) {
++            ok = ok && t && t->buffer && ggml_backend_buffer_is_host(t->buffer) && t->ne[2] == n_expert;
++        }
++        if (!ok) {
++            LLAMA_LOG_WARN("%s: layer %d experts are not in host memory, layer skipped\n", __func__, il);
++            continue;
++        }
++        L.il  = il;
++        L.src = src;
++        for (auto * t : src) {
++            const int64_t id = gguf_find_tensor(g, ggml_get_name(t));
++            if (id < 0) {
++                throw std::runtime_error(std::string("xcache: tensor not in gguf: ") + ggml_get_name(t));
++            }
++            L.foff.push_back(data_off + gguf_get_tensor_offset(g, id));
++            L.nb2.push_back(t->nb[2]);
++        }
++        if (!buft) {
++            buft = ggml_backend_buffer_get_type(ly.ffn_gate_inp->buffer);
++        }
++        n_pool_tensors += (int) src.size() + 1;
++    }
++    gguf_free(g);
++    if (!buft) {
++        throw std::runtime_error("xcache: no MoE layer with host experts");
++    }
++
++    // slots per layer: cap_max everywhere, or shares from LLAMA_XCACHE_CAPS (one weight per MoE layer, comma separated),
++    // scaled so that the pools take the same device memory as cap_max slots in every layer
++    {
++        std::vector<int> moe;
++        for (int il = 0; il < n_layer; ++il) {
++            if (layers[il].il >= 0) {
++                moe.push_back(il);
++            }
++        }
++        std::vector<double> w(moe.size(), 1.0);
++        if (const char * cs = getenv("LLAMA_XCACHE_CAPS"); cs && *cs) {
++            std::vector<double> v;
++            for (const char * p = cs; *p;) {
++                char * end = nullptr;
++                const double x = strtod(p, &end);
++                if (end == p) {
++                    break;
++                }
++                v.push_back(x);
++                p = *end == ',' ? end + 1 : end;
++            }
++            if (v.size() != moe.size()) {
++                throw std::runtime_error("xcache: LLAMA_XCACHE_CAPS needs one weight per MoE layer");
++            }
++            w = v;
++        }
++        double b_all = 0, b_w = 0;
++        for (size_t i = 0; i < moe.size(); ++i) {
++            size_t b = 0;
++            for (auto x : layers[moe[i]].nb2) {
++                b += x;
++            }
++            b_all += (double) cap_max * b;
++            b_w   += w[i] * b;
++        }
++        for (size_t i = 0; i < moe.size(); ++i) {
++            auto & L = layers[moe[i]];
++            L.cap_max = std::min(n_expert, std::max(n_used + 1, (int) std::lround(w[i] * b_all / b_w)));
++            L.cap     = L.cap_max;
++        }
++    }
++
++    // device pools
++    ggml_init_params ip = { /*.mem_size =*/ ggml_tensor_overhead() * (size_t) (n_pool_tensors + 8), /*.mem_buffer =*/ nullptr, /*.no_alloc =*/ true };
++    ctx_pool = ggml_init(ip);
++    size_t max_stage = 0;
++    for (auto & L : layers) {
++        if (L.il < 0) {
++            continue;
++        }
++        size_t st = 0;
++        for (size_t k = 0; k < L.src.size(); ++k) {
++            ggml_tensor * s = L.src[k];
++            ggml_tensor * p = ggml_new_tensor_3d(ctx_pool, s->type, s->ne[0], s->ne[1], L.cap_max);
++            ggml_format_name(p, "xc_pool_%d_%zu", L.il, k);
++            GGML_ASSERT(p->nb[2] == s->nb[2]);
++            L.pool.push_back(p);
++            st += (L.nb2[k] + 2 * XC_ALIGN) / XC_ALIGN * XC_ALIGN;
++        }
++        L.slot_map = ggml_new_tensor_2d(ctx_pool, GGML_TYPE_I32, 1, n_expert);
++        ggml_format_name(L.slot_map, "xc_slot_map_%d", L.il);
++        max_stage = std::max(max_stage, st);
++        expert_bytes = 0;
++        for (auto b : L.nb2) {
++            expert_bytes += b;
++        }
++        L.state.assign(n_expert, 0);
++        L.slot_of.assign(n_expert, -1);
++        L.slot_e.assign(L.cap_max, -1);
++        L.rec.assign(n_expert, -1.0);
++        L.prompt_rec.assign(n_expert, -1.0);
++        L.rv.assign(n_expert, 0.0);
++        L.rt.assign(n_expert, 0.0);
++        L.slot_map_host.assign(n_expert, 0);
++    }
++    if (ggml_backend_dev_t pdev = ggml_backend_buft_get_device(buft)) {
++        buft = ggml_backend_dev_buffer_type(pdev); // default buffer type of the device (not a mapped one)
++    }
++    buft_dev = buft;
++    buf_pool = ggml_backend_alloc_ctx_tensors_from_buft(ctx_pool, buft);
++    if (!buf_pool) {
++        throw std::runtime_error("xcache: failed to allocate expert pools");
++    }
++    ggml_backend_buffer_clear(buf_pool, 0);
++    ggml_backend_buffer_set_usage(buf_pool, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
++
++    // pinned staging buffers: urgent workers, background workers, main thread
++    stage_size = (max_stage + XC_ALIGN - 1) / XC_ALIGN * XC_ALIGN;
++    const int n_stage = XC_N_URG + XC_N_BG + 1;
++    const size_t host_size = stage_size * n_stage + XC_ALIGN;
++    ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
++    ggml_backend_buffer_type_t host_buft = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
++    if (host_buft) {
++        buf_host = ggml_backend_buft_alloc_buffer(host_buft, host_size);
++    }
++    uint8_t * base = nullptr;
++    if (buf_host) {
++        base = (uint8_t *) ggml_backend_buffer_get_base(buf_host);
++    } else {
++        host_fallback.resize(host_size);
++        base = host_fallback.data();
++    }
++    host_base = base + ((XC_ALIGN - ((uintptr_t) base % XC_ALIGN)) % XC_ALIGN);
++    pool_dev  = dev;
++
++    // pinned scratch for the per-layer routing copies
++    const size_t io_stride = ((size_t) (3 * n_used + 2 * n_expert) * 4 + 255) / 256 * 256;
++    const size_t io_size   = io_stride * layers.size() + 256;
++    if (host_buft) {
++        buf_io = ggml_backend_buft_alloc_buffer(host_buft, io_size);
++    }
++    uint8_t * iob = nullptr;
++    if (buf_io) {
++        iob = (uint8_t *) ggml_backend_buffer_get_base(buf_io);
++    } else {
++        io_fallback.resize(io_size);
++        iob = io_fallback.data();
++    }
++    iob += (256 - ((uintptr_t) iob % 256)) % 256;
++    for (size_t i = 0; i < layers.size(); ++i) {
++        auto & L = layers[i];
++        uint8_t * q = iob + i * io_stride;
++        L.io_gids = (int32_t *) q; q += 4 * n_used;
++        L.io_ids  = (int32_t *) q; q += 4 * n_used;
++        L.io_w    = (float   *) q; q += 4 * n_used;
++        L.io_gz   = (float   *) q; q += 4 * n_expert;
++        L.io_map  = (int32_t *) q;
++    }
++
++    fd_direct = open(gguf_path, O_RDONLY | O_DIRECT);
++    if (fd_direct >= 0) {
++        // probe: an aligned read must work
++        if (pread(fd_direct, host_base, XC_ALIGN, 0) != (ssize_t) XC_ALIGN) {
++            close(fd_direct);
++            fd_direct = -1;
++        }
++    }
++    fd_buffered = open(gguf_path, O_RDONLY);
++    if (fd_buffered < 0) {
++        throw std::runtime_error("xcache: cannot open gguf for reading");
++    }
++    posix_fadvise(fd_buffered, 0, 0, POSIX_FADV_RANDOM);
++
++
++    if (const char * tp = getenv("LLAMA_XCACHE_TRACE"); tp && *tp) {
++        trace = fopen(tp, "w");
++    }
++
++    for (int i = 0; i < XC_N_BG; ++i) {
++        bg_threads.emplace_back([this, i] { bg_worker(i); });
++    }
++    for (int i = 0; i < XC_N_URG; ++i) {
++        u_threads.emplace_back([this, i] { u_worker(i); });
++    }
++
++    int cmin = n_expert, cmax = 0;
++    for (const auto & L : layers) {
++        if (L.il >= 0) {
++            cmin = std::min(cmin, L.cap_max);
++            cmax = std::max(cmax, L.cap_max);
++        }
++    }
++    LLAMA_LOG_INFO("%s: experts %d, used %d, slots %d per layer (%d..%d), pools %.2f GiB (%s), expert %.2f MiB, O_DIRECT %s\n",
++            __func__, n_expert, n_used, cap_max, cmin, cmax, ggml_backend_buffer_get_size(buf_pool) / 1024.0 / 1024.0 / 1024.0,
++            ggml_backend_buft_name(buft), expert_bytes / 1024.0 / 1024.0, fd_direct >= 0 ? "yes" : "no");
++}
++
++llama_xcache::~llama_xcache() {
++    drain();
++    {
++        std::lock_guard<std::mutex> lk(bg_mtx);
++        stopping = true;
++    }
++    bg_cv.notify_all();
++    {
++        std::lock_guard<std::mutex> lk(u_mtx);
++        stopping = true;
++        u_gen++;
++    }
++    u_cv.notify_all();
++    for (auto & t : bg_threads) {
++        t.join();
++    }
++    for (auto & t : u_threads) {
++        t.join();
++    }
++    {
++        std::lock_guard<std::mutex> lk(pf_mtx);
++        stopping = true;
++    }
++    pf_cv.notify_all();
++    if (pf_thread.joinable()) {
++        pf_thread.join();
++    }
++    if (trace) {
++        fclose(trace);
++    }
++    if (fd_direct >= 0) {
++        close(fd_direct);
++    }
++    if (fd_buffered >= 0) {
++        close(fd_buffered);
++    }
++    if (buf_pool) {
++        ggml_backend_buffer_free(buf_pool);
++    }
++    if (buf_host) {
++        ggml_backend_buffer_free(buf_host);
++    }
++    if (buf_io) {
++        ggml_backend_buffer_free(buf_io);
++    }
++    if (buf_stage) {
++        ggml_backend_buffer_free(buf_stage);
++    }
++    if (ctx_stage) {
++        ggml_free(ctx_stage);
++    }
++    if (ctx_pool) {
++        ggml_free(ctx_pool);
++    }
++}
++
++//
++// graph build
++//
++
++void llama_xcache::begin_graph() {
++    hooks.clear();
++    for (auto & L : layers) {
++        L.h_logits = L.h_ids = L.h_w = nullptr;
++    }
++}
++
++ggml_tensor * llama_xcache::get_pool(int il, ggml_tensor * src_t) const {
++    const auto & L = layers[il];
++    for (size_t k = 0; k < L.src.size(); ++k) {
++        if (L.src[k] == src_t) {
++            return L.pool[k];
++        }
++    }
++    return nullptr;
++}
++
++ggml_tensor * llama_xcache::get_stage(int il, ggml_tensor * src_t) const {
++    const auto & L = layers[il];
++    for (size_t k = 0; k < L.src.size() && k < L.stg.size(); ++k) {
++        if (L.src[k] == src_t) {
++            return L.stg[k];
++        }
++    }
++    return nullptr;
++}
++
++// one device area with the layout of a whole layer (all experts); every layer gets tensors that alias it,
++// the prompt pass refills it layer by layer from the routing callback
++bool llama_xcache::alloc_stage() {
++    if (buf_stage) {
++        return true;
++    }
++    const size_t align = std::max<size_t>(256, ggml_backend_buft_get_alignment(buft_dev));
++    size_t need = 0;
++    int n_t = 0;
++    for (const auto & L : layers) {
++        if (L.il < 0) {
++            continue;
++        }
++        size_t sz = 0;
++        for (size_t k = 0; k < L.src.size(); ++k) {
++            sz += (L.nb2[k] * (size_t) n_expert + align - 1) / align * align;
++        }
++        need = std::max(need, sz);
++        n_t += (int) L.src.size();
++    }
++    need = (need + align - 1) / align * align;
++    buf_stage = ggml_backend_buft_alloc_buffer(buft_dev, 2 * need + align);
++    if (!buf_stage) {
++        LLAMA_LOG_WARN("%s: cannot allocate %.2f GiB of staging for prompt streaming\n", __func__, need / 1024.0 / 1024.0 / 1024.0);
++        return false;
++    }
++    ggml_backend_buffer_set_usage(buf_stage, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
++    ggml_init_params ip = { /*.mem_size =*/ ggml_tensor_overhead() * (size_t) (n_t + 8), /*.mem_buffer =*/ nullptr, /*.no_alloc =*/ true };
++    ctx_stage = ggml_init(ip);
++    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf_stage);
++    base += (align - ((uintptr_t) base % align)) % align;
++    int ord = 0;
++    for (auto & L : layers) {
++        if (L.il < 0) {
++            continue;
++        }
++        size_t off = (size_t) (ord++ % 2) * need; // consecutive MoE layers use different areas
++        L.stg.clear();
++        for (size_t k = 0; k < L.src.size(); ++k) {
++            ggml_tensor * s = L.src[k];
++            ggml_tensor * t = ggml_new_tensor_3d(ctx_stage, s->type, s->ne[0], s->ne[1], n_expert);
++            ggml_format_name(t, "xc_stage_%d_%zu", L.il, k);
++            GGML_ASSERT(t->nb[2] == s->nb[2]);
++            if (ggml_backend_tensor_alloc(buf_stage, t, base + off) != GGML_STATUS_SUCCESS) {
++                LLAMA_LOG_WARN("%s: staging tensor alloc failed\n", __func__);
++                return false;
++            }
++            L.stg.push_back(t);
++            off += (L.nb2[k] * (size_t) n_expert + align - 1) / align * align;
++        }
++    }
++    LLAMA_LOG_INFO("%s: prompt streaming staging 2 x %.2f GiB\n", __func__, need / 1024.0 / 1024.0 / 1024.0);
++    return true;
++}
++
++void llama_xcache::hook_prefill(int il, ggml_tensor * ids) {
++    hooks[ids] = { il, XC_HOOK_PREFILL };
++}
++
++void llama_xcache::hook_decode(int il, ggml_tensor * logits, ggml_tensor * ids, ggml_tensor * w, bool norm_w, float w_scale) {
++    auto & L = layers[il];
++    L.h_logits = logits;
++    L.h_ids    = ids;
++    L.h_w      = w;
++    L.norm_w   = norm_w;
++    L.w_scale  = w_scale;
++    hooks[w] = { il, XC_HOOK_DECODE };
++}
++
++bool llama_xcache::eval_cb(ggml_tensor * t, bool ask, void * user_data) {
++    auto * xc = (llama_xcache *) user_data;
++    auto it = xc->hooks.find(t);
++    if (it == xc->hooks.end()) {
++        return !ask;
++    }
++    const int kind = it->second.kind;
++    if (ask) {
++        return kind == XC_HOOK_PREFILL ? (xc->capture_prompt || xc->prefill_stream()) : xc->mode != LLAMA_XC_IDEAL;
++    }
++    if (kind == XC_HOOK_PREFILL) {
++        xc->on_prefill(it->second.il, t);
++    } else {
++        xc->on_decode(it->second.il);
++    }
++    return true;
++}
++
++void llama_xcache::ubatch_done(int n_tokens) {
++    if (n_tokens == 1) {
++        if (opt.sbg && mode != LLAMA_XC_IDEAL && mode != LLAMA_XC_IDEAL_SYNC) {
++            drain();
++        }
++        t_pos += 1;
++        s_tok++;
++    } else {
++        prompt_pos += n_tokens;
++    }
++}
++
++//
++// control
++//
++
++void llama_xcache::begin_prompt() {
++    drain();
++    prompt_pos = 0;
++    capture_prompt = true;
++    for (auto & L : layers) {
++        std::fill(L.prompt_rec.begin(), L.prompt_rec.end(), -1.0);
++        L.prompt_ids.clear();
++    }
++    s_pf_ms   = 0;
++    s_pf_read = 0;
++    s_pf_d2d  = 0;
++    s_pf_ram  = 0;
++    s_pf_used = 0;
++    s_pf_pre  = 0;
++    s_pf_pre_hit = 0;
++    const bool ps = prefill_stream();
++    ef_active = opt.ef || ps;
++    ef_cap    = cap;
++    ef_filled.assign(layers.size(), 0);
++    if (ps && !opt.fresh) {
++        // keep what the pools hold: the prompt pass copies resident experts instead of reading them
++        for (auto & L : layers) {
++            if (L.il >= 0) {
++                poll(L.il);
++            }
++        }
++    } else if (ef_active || opt.fresh) {
++        for (auto & L : layers) {
++            if (L.il < 0) {
++                continue;
++            }
++            L.pend.clear();
++            std::fill(L.state.begin(), L.state.end(), 0);
++            std::fill(L.slot_of.begin(), L.slot_of.end(), -1);
++            std::fill(L.slot_e.begin(), L.slot_e.end(), -1);
++        }
++    }
++    if (opt.pf > 0) {
++        if (!pf_thread.joinable()) {
++            pf_thread = std::thread([this] { pf_worker(); });
++        }
++        std::lock_guard<std::mutex> lk(pf_mtx);
++        pf_on   = true;
++        pf_cur  = -1;
++        pf_next = 0;
++    } else {
++        std::lock_guard<std::mutex> lk(pf_mtx);
++        pf_on = false;
++    }
++    pf_cv.notify_all();
++}
++
++void llama_xcache::pf_worker() {
++    for (;;) {
++        int l;
++        {
++            std::unique_lock<std::mutex> lk(pf_mtx);
++            pf_cv.wait(lk, [&] {
++                return stopping.load() || (pf_on && opt.pf > 0 && pf_next < (int) layers.size() && pf_next <= pf_cur + opt.pf);
++            });
++            if (stopping) {
++                return;
++            }
++            l = pf_next++;
++        }
++        const auto & L = layers[l];
++        if (L.il < 0) {
++            continue;
++        }
++        for (size_t k = 0; k < L.src.size(); ++k) {
++            posix_fadvise(fd_buffered, (off_t) L.foff[k], (off_t) (L.nb2[k] * (size_t) n_expert), POSIX_FADV_WILLNEED);
++        }
++    }
++}
++
++void llama_xcache::evict_host() {
++    drain();
++    const size_t page = (size_t) sysconf(_SC_PAGESIZE);
++    for (auto & L : layers) {
++        if (L.il < 0) {
++            continue;
++        }
++        for (size_t k = 0; k < L.src.size(); ++k) {
++            const size_t len = L.nb2[k] * (size_t) n_expert;
++            const uintptr_t a0 = (uintptr_t) L.src[k]->data / page * page;
++            const uintptr_t a1 = ((uintptr_t) L.src[k]->data + len + page - 1) / page * page;
++            madvise((void *) a0, a1 - a0, MADV_DONTNEED);
++            posix_fadvise(fd_buffered, (off_t) L.foff[k], (off_t) len, POSIX_FADV_DONTNEED);
++        }
++    }
++}
++
++void llama_xcache::on_prefill(int il, ggml_tensor * ids) {
++    auto & L = layers[il];
++    const size_t nb = ggml_nbytes(ids);
++    std::vector<int32_t> buf(nb / sizeof(int32_t) + 1);
++    ggml_backend_tensor_get(ids, buf.data(), 0, nb);
++    std::vector<int> cnt(n_expert, 0);
++    for (int64_t j = 0; j < ids->ne[1]; ++j) {
++        for (int64_t k = 0; k < ids->ne[0]; ++k) {
++            const int32_t e = buf[(j * ids->nb[1] + k * ids->nb[0]) / sizeof(int32_t)];
++            const bool ok = e >= 0 && e < n_expert;
++            if (ok) {
++                cnt[e]++;
++                if (capture_prompt) {
++                    L.prompt_rec[e] = std::max(L.prompt_rec[e], (double) (prompt_pos + j));
++                }
++            }
++            if (capture_prompt && k < n_used) {
++                L.prompt_ids.push_back(ok ? e : -1);
++            }
++        }
++    }
++    if (prefill_stream()) {
++        prefill_load(il, cnt);
++        return;
++    }
++
++    if (opt.pf > 0) {
++        {
++            std::lock_guard<std::mutex> lk(pf_mtx);
++            if (il < pf_cur) {
++                pf_next = il + 1; // next ubatch of the prompt
++            }
++            pf_cur  = il;
++            pf_next = std::max(pf_next, il + 1);
++        }
++        pf_cv.notify_all();
++    }
++    if (ef_active && !ef_filled[il]) {
++        // the prompt routing of this layer is known: start loading its cache now, in the background
++        ef_filled[il] = 1;
++        std::vector<int> order(n_expert);
++        for (int e = 0; e < n_expert; ++e) {
++            order[e] = e;
++        }
++        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return L.prompt_rec[a] > L.prompt_rec[b]; });
++        for (int s = 0; s < L.cap; ++s) {
++            const int e = order[s];
++            L.state[e]   = 2;
++            L.slot_of[e] = s;
++            L.slot_e[s]  = e;
++            auto j = std::make_shared<llama_xc_job>();
++            j->il = il;
++            j->e = e;
++            j->slot = s;
++            L.pend[e] = j;
++            n_outstanding++;
++            {
++                std::lock_guard<std::mutex> lk(bg_mtx);
++                bg_q.push_back(j);
++            }
++        }
++        bg_cv.notify_all();
++    }
++}
++
++// prompt pass of one layer: put every expert the ubatch uses into the staging area (copy from the pool when
++// resident, read from the file otherwise), then move the layer's decode set into its slots
++void llama_xcache::prefill_load(int il, const std::vector<int> & cnt) {
++    const double t0 = xc_now_ms();
++    auto & L = layers[il];
++    poll(il);
++    wait_prefetch();
++    const bool pre = pre_for == il;
++    pre_for = -1;
++
++    std::vector<utask> tasks;
++    int nu = 0;
++    for (int e = 0; e < n_expert; ++e) {
++        if (cnt[e] == 0) {
++            continue;
++        }
++        nu++;
++        if (pre && pre_have[e]) {
++            s_pf_pre_hit++; // already read ahead
++        } else if (L.state[e] == 1 && L.slot_of[e] >= 0) {
++            tasks.push_back({ il, e, L.slot_of[e], -1, XT_POOL_STAGE });
++        } else {
++            tasks.push_back({ il, e, -1, -1, XT_FILE_STAGE });
++        }
++    }
++    s_pf_used += nu;
++    // file reads first so they start early; copies are cheap
++    std::stable_partition(tasks.begin(), tasks.end(), [](const utask & t) { return t.kind == XT_FILE_STAGE; });
++    run_urgent(tasks);
++
++    if (capture_prompt && ef_active && ef_cap == cap && L.pend.empty()) {
++        // the decode set of this layer (same order as configure): the most recently used experts of the prompt
++        std::vector<int> order(n_expert);
++        for (int e = 0; e < n_expert; ++e) {
++            order[e] = e;
++        }
++        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return L.prompt_rec[a] > L.prompt_rec[b]; });
++        std::vector<char> in_set(n_expert, 0);
++        for (int s = 0; s < L.cap; ++s) {
++            in_set[order[s]] = 1;
++        }
++        std::vector<int> free_slots;
++        for (int s = 0; s < L.cap; ++s) {
++            const int e = L.slot_e[s];
++            if (e < 0 || L.state[e] != 1 || !in_set[e]) {
++                free_slots.push_back(s);
++            }
++        }
++        std::vector<utask> fill;
++        size_t fi = 0;
++        for (int i = 0; i < L.cap; ++i) {
++            const int e = order[i];
++            if (L.state[e] == 1 && L.slot_of[e] >= 0 && L.slot_of[e] < L.cap) {
++                continue; // resident
++            }
++            if (cnt[e] == 0) {
++                continue; // not in the staging area: configure loads it
++            }
++            GGML_ASSERT(fi < free_slots.size());
++            const int s = free_slots[fi++];
++            const int v = L.slot_e[s];
++            if (v >= 0) {
++                L.state[v]   = 0;
++                L.slot_of[v] = -1;
++            }
++            if (L.slot_of[e] >= 0) {
++                L.slot_e[L.slot_of[e]] = -1; // resident above cap (older, larger configuration)
++            }
++            L.slot_e[s]  = e;
++            L.slot_of[e] = s;
++            L.state[e]   = 1;
++            fill.push_back({ il, e, s, -1, XT_STAGE_POOL });
++        }
++        run_urgent(fill);
++        ef_filled[il] = 1;
++    }
++
++    if (opt.pso > 0 && nu >= opt.pso * n_expert) {
++        // dense layer: the next one is likely dense too, read its non-resident experts while the device computes
++        int jn = il + 1;
++        while (jn < (int) layers.size() && layers[jn].il < 0) {
++            jn++;
++        }
++        if (jn < (int) layers.size()) {
++            auto & N = layers[jn];
++            poll(jn);
++            pre_have.assign(n_expert, 0);
++            auto b = std::make_shared<ubatch>();
++            for (int e = 0; e < n_expert; ++e) {
++                if (!(N.state[e] == 1 && N.slot_of[e] >= 0)) {
++                    b->tasks.push_back({ jn, e, -1, -1, XT_FILE_STAGE });
++                    pre_have[e] = 1;
++                }
++            }
++            if (!b->tasks.empty()) {
++                s_pf_pre += (int64_t) b->tasks.size();
++                b->left = (int) b->tasks.size();
++                {
++                    std::lock_guard<std::mutex> lk(u_mtx);
++                    u_cur = b;
++                    u_gen++;
++                }
++                u_cv.notify_all();
++                pre_b   = b;
++                pre_for = jn;
++            }
++        }
++    }
++    s_pf_ms += xc_now_ms() - t0;
++}
++
++void llama_xcache::set_opts(const char * str) {
++    opt = llama_xc_opts();
++    std::string s = str ? str : "";
++    size_t p = 0;
++    while (p < s.size()) {
++        size_t q = s.find('+', p);
++        if (q == std::string::npos) {
++            q = s.size();
++        }
++        const std::string kv = s.substr(p, q - p);
++        p = q + 1;
++        const size_t eq = kv.find('=');
++        if (kv.empty() || eq == std::string::npos) {
++            continue;
++        }
++        const std::string k = kv.substr(0, eq);
++        const double v = atof(kv.c_str() + eq + 1);
++        if      (k == "aio") { opt.aio   = v != 0; }
++        else if (k == "uf")  { opt.uf    = v != 0; }
++        else if (k == "up")  { opt.upart = v != 0; }
++        else if (k == "adm") { opt.adm   = v != 0; }
++        else if (k == "sbg") { opt.sbg   = v != 0; }
++        else if (k == "lam") { opt.lam   = v; }
++        else if (k == "bg")  { opt.bg    = v != 0; }
++        else if (k == "pf")  { opt.pf    = (int) v; }
++        else if (k == "ef")  { opt.ef    = v != 0; }
++        else if (k == "ps")  { opt.ps    = v != 0; }
++        else if (k == "fresh") { opt.fresh = v != 0; }
++        else if (k == "pso") { opt.pso   = v; }
++        else if (k == "ram") { opt.ram   = (int) v; }
++        else if (k == "ramthr") { opt.ramthr = v; }
++        else if (k == "fe")  { opt.fe    = v; }
++        else if (k == "dk")  { opt.dk    = v != 0; }
++        else if (k == "rb")  { opt.rb    = v; }
++        else if (k == "rh")  { opt.rh    = v; }
++        else if (k == "rq")  { opt.rq    = (int) v; }
++        else {
++            LLAMA_LOG_WARN("%s: unknown option '%s'\n", __func__, k.c_str());
++        }
++    }
++    if (opt.fe > 0 && opt.fe < 1) {
++        opt.lam = -std::log2(1.0 - opt.fe);
++    } else {
++        opt.fe = 0;
++    }
++    if (opt.rh <= 0) {
++        opt.rh = 512.0;
++    }
++    if (opt.ps && !alloc_stage()) {
++        opt.ps = false;
++    }
++    ram_on = opt.ram == 1;
++    if (opt.ram == 2) {
++        ram_frac = resident_frac();
++        ram_on   = ram_frac >= opt.ramthr;
++        LLAMA_LOG_INFO("%s: ram auto: %.1f%% of the expert pages resident -> %s\n", __func__, 100.0 * ram_frac, ram_on ? "on" : "off");
++    }
++}
++
++double llama_xcache::resident_frac() {
++    static const size_t page = (size_t) sysconf(_SC_PAGESIZE);
++    size_t n_in = 0;
++    size_t n_all = 0;
++    int ord = 0;
++    for (const auto & L : layers) {
++        if (L.il < 0 || (ord++ % 4) != 0) {
++            continue;
++        }
++        for (const ggml_tensor * t : L.src) {
++            const uintptr_t a0 = (uintptr_t) t->data / page * page;
++            const uintptr_t a1 = ((uintptr_t) t->data + ggml_nbytes(t) + page - 1) / page * page;
++            mc_vec.resize((a1 - a0) / page);
++            if (mincore((void *) a0, a1 - a0, mc_vec.data()) != 0) {
++                return 0.0;
++            }
++            for (unsigned char v : mc_vec) {
++                n_in += v & 1;
++            }
++            n_all += mc_vec.size();
++        }
++    }
++    return n_all ? (double) n_in / (double) n_all : 0.0;
++}
++
++int llama_xcache::configure(int mode_, float frac, int src_, float tau_) {
++    drain();
++    {
++        std::lock_guard<std::mutex> lk(pf_mtx);
++        pf_on = false;
++    }
++    mode = mode_;
++    src  = src_;
++    tau  = tau_;
++    cap  = std::min(cap_max, std::max(n_used + 1, (int) std::lround(frac * n_expert)));
++    const bool reuse = ef_active && ef_cap == cap;
++    ef_active = false;
++
++    std::vector<utask> tasks;
++    for (auto & L : layers) {
++        if (L.il < 0) {
++            continue;
++        }
++        poll(L.il);
++        L.cap = std::min(L.cap_max, std::max(n_used + 1, (int) std::lround((double) L.cap_max * cap / cap_max)));
++        const std::vector<int8_t>  old_state   = L.state;
++        const std::vector<int32_t> old_slot_of = L.slot_of;
++        const bool keep = reuse && L.il < (int) ef_filled.size() && ef_filled[L.il];
++        L.pend.clear();
++        std::fill(L.state.begin(), L.state.end(), 0);
++        std::fill(L.slot_of.begin(), L.slot_of.end(), -1);
++        std::fill(L.slot_e.begin(), L.slot_e.end(), -1);
++        std::fill(L.rv.begin(), L.rv.end(), 0.0);
++        std::fill(L.rt.begin(), L.rt.end(), 0.0);
++        L.rec = L.prompt_rec;
++        if (opt.fe > 0) {
++            // frequency score key = log2(sum over uses of 2^(lam * position)), from every use of the prompt
++            for (int e = 0; e < n_expert; ++e) {
++                L.rec[e] = -1e30;
++            }
++            for (size_t i = 0; i < L.prompt_ids.size(); ++i) {
++                const int e = L.prompt_ids[i];
++                if (e < 0) {
++                    continue;
++                }
++                const double x = opt.lam * (double) (i / n_used);
++                double & k = L.rec[e];
++                k = k < -1e29 ? x : std::max(k, x) + std::log2(1.0 + std::exp2(-std::fabs(k - x)));
++            }
++        } else if (opt.lam > 0) {
++            // LRFU key = log2(score) + lam * t_last; a prompt use counts as one use at its last position
++            for (int e = 0; e < n_expert; ++e) {
++                L.rec[e] = L.prompt_rec[e] >= 0 ? opt.lam * L.prompt_rec[e] : -1e30;
++            }
++        }
++
++        // initial set: most recently used experts of the prompt (option fe: best frequency scores)
++        std::vector<int> order(n_expert);
++        for (int e = 0; e < n_expert; ++e) {
++            order[e] = e;
++        }
++        const std::vector<double> & okey = opt.fe > 0 ? L.rec : L.prompt_rec;
++        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return okey[a] > okey[b]; });
++        std::vector<char> used(L.cap, 0);
++        std::vector<int>  todo;
++        for (int s = 0; s < L.cap; ++s) {
++            const int e = order[s];
++            const int os = keep && old_state[e] == 1 ? old_slot_of[e] : -1;
++            if (os >= 0 && os < L.cap && !used[os]) {
++                // already loaded during the prefill
++                used[os]     = 1;
++                L.state[e]   = 1;
++                L.slot_of[e] = os;
++                L.slot_e[os] = e;
++            } else {
++                todo.push_back(e);
++            }
++        }
++        int f = 0;
++        for (int e : todo) {
++            while (used[f]) {
++                f++;
++            }
++            used[f]      = 1;
++            L.state[e]   = 1;
++            L.slot_of[e] = f;
++            L.slot_e[f]  = e;
++            tasks.push_back({ L.il, e, f });
++        }
++    }
++    const int saved_src = src;
++    src = LLAMA_XC_SRC_NVME;
++    for (size_t i = 0; i < tasks.size(); i += 256) {
++        std::vector<utask> part(tasks.begin() + i, tasks.begin() + std::min(tasks.size(), i + 256));
++        run_urgent(part);
++    }
++    src = saved_src;
++
++    for (auto & L : layers) {
++        if (L.il < 0) {
++            continue;
++        }
++        for (int e = 0; e < n_expert; ++e) {
++            if (mode == LLAMA_XC_IDEAL || mode == LLAMA_XC_IDEAL_SYNC) {
++                L.slot_map_host[e] = e % L.cap;
++            } else {
++                L.slot_map_host[e] = L.slot_of[e] >= 0 ? L.slot_of[e] : 0;
++            }
++        }
++        ggml_backend_tensor_set(L.slot_map, L.slot_map_host.data(), 0, sizeof(int32_t) * n_expert);
++        L.dirty = false;
++    }
++
++    t_pos = prompt_pos;
++    capture_prompt = false;
++    if (trace) {
++        for (const auto & L : layers) {
++            if (L.il < 0) {
++                continue;
++            }
++            fprintf(trace, "CFG %d %d %.0f %d %.9g %.17g %d %.17g %.17g %d %d\n", L.il, L.cap, t_pos, mode, tau, opt.lam, (int) opt.dk,
++                    opt.rb, opt.rh, opt.rq, (int) opt.sbg);
++            fprintf(trace, "S");
++            for (int s = 0; s < L.cap; ++s) {
++                fprintf(trace, " %d", L.slot_e[s]);
++            }
++            fprintf(trace, "\nR");
++            for (int e = 0; e < n_expert; ++e) {
++                fprintf(trace, " %.17g", L.rec[e]);
++            }
++            fprintf(trace, "\nP");
++            for (int x : L.prompt_ids) {
++                fprintf(trace, " %d", x);
++            }
++            fprintf(trace, "\n");
++        }
++    }
++    s_stall_ms = s_wait_pending_ms = s_cb_ms = s_mass = 0;
++    s_tok = s_want = s_hit = s_sub = s_urg = s_cancel = s_drop = s_steal = s_skip = s_ltok = 0;
++    s_bg = 0;
++    s_bytes = 0;
++    return 0;
++}
++
++void llama_xcache::get_stats(llama_xcache_stats * out) const {
++    out->stall_ms        = s_stall_ms;
++    out->wait_pending_ms = s_wait_pending_ms;
++    out->cb_ms           = s_cb_ms;
++    out->n_tok    = s_tok;
++    out->n_want   = s_want;
++    out->n_hit    = s_hit;
++    out->n_sub    = s_sub;
++    out->n_urg    = s_urg;
++    out->n_bg     = s_bg.load();
++    out->n_cancel = s_cancel;
++    out->n_drop   = s_drop;
++    out->n_steal  = s_steal;
++    out->n_skip   = s_skip;
++    out->bytes    = s_bytes.load();
++    out->pf_ms         = s_pf_ms;
++    out->pf_read_bytes = s_pf_read.load();
++    out->pf_d2d_bytes  = s_pf_d2d.load();
++    out->pf_ram_bytes  = s_pf_ram.load();
++    out->pf_used       = s_pf_used;
++    out->pf_pre        = s_pf_pre;
++    out->pf_pre_hit    = s_pf_pre_hit;
++    out->ram_frac      = ram_frac;
++    out->ram_on        = ram_on ? 1 : 0;
++    out->mass          = s_mass;
++    out->n_ltok        = s_ltok;
++}
++
++//
++// loading
++//
++
++const uint8_t * llama_xcache::read_tensor_part(int il, int k, int e, uint8_t * dst) {
++    const auto & L = layers[il];
++    const size_t   len = L.nb2[k];
++    const uint64_t off = L.foff[k] + (uint64_t) e * len;
++    if (fd_direct >= 0) {
++        const uint64_t a0 = off / XC_ALIGN * XC_ALIGN;
++        const uint64_t a1 = (off + len + XC_ALIGN - 1) / XC_ALIGN * XC_ALIGN;
++        size_t got = 0;
++        while (got < a1 - a0) {
++            const ssize_t r = pread(fd_direct, dst + got, (a1 - a0) - got, a0 + got);
++            if (r <= 0) {
++                throw std::runtime_error("xcache: read failed");
++            }
++            got += r;
++        }
++        return dst + (off - a0);
++    }
++    size_t got = 0;
++    while (got < len) {
++        const ssize_t r = pread(fd_buffered, dst + got, len - got, off + got);
++        if (r <= 0) {
++            throw std::runtime_error("xcache: read failed");
++        }
++        got += r;
++    }
++    posix_fadvise(fd_buffered, off, len, POSIX_FADV_DONTNEED);
++    return dst;
++}
++
++// true when every page of [p, p + n) is in memory (page cache for file mappings)
++bool llama_xcache::resident(const void * p, size_t n) {
++    static const size_t page = (size_t) sysconf(_SC_PAGESIZE);
++    const uintptr_t a0 = (uintptr_t) p / page * page;
++    const uintptr_t a1 = ((uintptr_t) p + n + page - 1) / page * page;
++    thread_local std::vector<unsigned char> vec;
++    vec.resize((a1 - a0) / page);
++    if (mincore((void *) a0, a1 - a0, vec.data()) != 0) {
++        return false;
++    }
++    for (unsigned char v : vec) {
++        if (!(v & 1)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++// device to device copy of a byte range (both tensors in device buffers of the pool device)
++void llama_xcache::d2d(ggml_tensor * a, size_t a_off, ggml_tensor * b, size_t b_off, size_t n) {
++    ggml_tensor ta{};
++    ggml_tensor tb{};
++    for (ggml_tensor * t : { &ta, &tb }) {
++        t->type  = GGML_TYPE_I8;
++        t->ne[0] = (int64_t) n;
++        t->ne[1] = t->ne[2] = t->ne[3] = 1;
++        t->nb[0] = 1;
++        t->nb[1] = t->nb[2] = t->nb[3] = n;
++    }
++    ta.buffer = a->buffer;
++    ta.data   = (uint8_t *) a->data + a_off;
++    tb.buffer = b->buffer;
++    tb.data   = (uint8_t *) b->data + b_off;
++    ggml_backend_tensor_copy(&ta, &tb);
++}
++
++void llama_xcache::load_part(int il, int e, int slot, int k, uint8_t * stg, int kind) {
++    const auto & L = layers[il];
++    const size_t nb = L.nb2[k];
++    if (kind == XT_POOL_STAGE) {
++        d2d(L.pool[k], (size_t) slot * nb, L.stg[k], (size_t) e * nb, nb);
++        s_pf_d2d += (int64_t) nb;
++        return;
++    }
++    if (kind == XT_STAGE_POOL) {
++        d2d(L.stg[k], (size_t) e * nb, L.pool[k], (size_t) slot * nb, nb);
++        s_pf_d2d += (int64_t) nb;
++        return;
++    }
++    const uint8_t * host = (const uint8_t *) L.src[k]->data + (size_t) e * nb;
++    const uint8_t * data;
++    bool from_ram = false;
++    if (src == LLAMA_XC_SRC_RAM) {
++        data = host;
++        from_ram = true;
++    } else if (ram_on && resident(host, nb)) {
++        // in the page cache: copy into pinned staging (faster than reading the file again)
++        memcpy(stg, host, nb);
++        data = stg;
++        from_ram = true;
++    } else {
++        data = read_tensor_part(il, k, e, stg);
++    }
++    if (kind == XT_FILE_STAGE) {
++        ggml_backend_tensor_set(L.stg[k], data, (size_t) e * nb, nb);
++        (from_ram ? s_pf_ram : s_pf_read) += (int64_t) nb;
++    } else {
++        ggml_backend_tensor_set(L.pool[k], data, (size_t) slot * nb, nb);
++        s_bytes += (int64_t) nb;
++    }
++}
++
++void llama_xcache::load_expert(int il, int e, int slot, uint8_t * stg, bool yield_to_urgent, int kind) {
++    const auto & L = layers[il];
++    uint8_t * p = stg;
++    for (size_t k = 0; k < L.src.size(); ++k) {
++        if (yield_to_urgent) {
++            while (urg_active.load() > 0) {
++                std::this_thread::sleep_for(std::chrono::microseconds(20));
++            }
++        }
++        load_part(il, e, slot, (int) k, p, kind);
++        p += (L.nb2[k] + 2 * XC_ALIGN) / XC_ALIGN * XC_ALIGN;
++    }
++}
++
++void llama_xcache::run_task(const utask & tk, uint8_t * stg) {
++    if (tk.part < 0) {
++        load_expert(tk.il, tk.e, tk.slot, stg, false, tk.kind);
++    } else {
++        load_part(tk.il, tk.e, tk.slot, tk.part, stg, tk.kind);
++    }
++}
++
++void llama_xcache::u_worker(int wid) {
++    int seen = 0;
++    for (;;) {
++        std::shared_ptr<ubatch> b;
++        {
++            std::unique_lock<std::mutex> lk(u_mtx);
++            u_cv.wait(lk, [&] { return u_gen != seen; });
++            seen = u_gen;
++            if (stopping) {
++                return;
++            }
++            b = u_cur;
++        }
++        for (;;) {
++            const int i = b->next.fetch_add(1);
++            if (i >= (int) b->tasks.size()) {
++                break;
++            }
++            run_task(b->tasks[i], stage(wid));
++            if (b->left.fetch_sub(1) == 1) {
++                std::lock_guard<std::mutex> lk(u_mtx);
++                u_done_cv.notify_all();
++            }
++        }
++    }
++}
++
++void llama_xcache::run_urgent(const std::vector<utask> & tasks_in) {
++    if (tasks_in.empty()) {
++        return;
++    }
++    std::vector<utask> tasks;
++    if (opt.upart) {
++        for (const auto & tk : tasks_in) {
++            for (int k = 0; k < (int) layers[tk.il].src.size(); ++k) {
++                tasks.push_back({ tk.il, tk.e, tk.slot, k, tk.kind });
++            }
++        }
++    } else {
++        tasks = tasks_in;
++    }
++    if (opt.uf) {
++        urg_active++;
++    }
++    uint8_t * stg_main = stage(XC_N_URG + XC_N_BG);
++    if (tasks.size() == 1) {
++        run_task(tasks[0], stg_main);
++    } else {
++        auto b = std::make_shared<ubatch>();
++        b->tasks = tasks;
++        b->left  = (int) tasks.size();
++        {
++            std::lock_guard<std::mutex> lk(u_mtx);
++            u_cur = b;
++            u_gen++;
++        }
++        u_cv.notify_all();
++        // the main thread takes tasks too
++        for (;;) {
++            const int i = b->next.fetch_add(1);
++            if (i >= (int) b->tasks.size()) {
++                break;
++            }
++            run_task(b->tasks[i], stg_main);
++            if (b->left.fetch_sub(1) == 1) {
++                std::lock_guard<std::mutex> lk(u_mtx);
++                u_done_cv.notify_all();
++            }
++        }
++        std::unique_lock<std::mutex> lk(u_mtx);
++        u_done_cv.wait(lk, [&] { return b->left.load() == 0; });
++    }
++    if (opt.uf) {
++        urg_active--;
++    }
++}
++
++void llama_xcache::bg_worker(int wid) {
++    for (;;) {
++        std::shared_ptr<llama_xc_job> j;
++        {
++            std::unique_lock<std::mutex> lk(bg_mtx);
++            bg_cv.wait(lk, [&] { return stopping || !bg_q.empty(); });
++            if (bg_q.empty()) {
++                return;
++            }
++            j = bg_q.front();
++            bg_q.pop_front();
++        }
++        int exp = XC_QUEUED;
++        if (j->st.compare_exchange_strong(exp, XC_RUNNING)) {
++            load_expert(j->il, j->e, j->slot, stage(XC_N_URG + wid), opt.uf);
++            s_bg++;
++            {
++                std::lock_guard<std::mutex> lk(done_mtx);
++                j->st = XC_DONE;
++            }
++            done_cv.notify_all();
++        }
++        n_outstanding--;
++        {
++            std::lock_guard<std::mutex> lk(done_mtx);
++        }
++        done_cv.notify_all();
++    }
++}
++
++void llama_xcache::wait_prefetch() {
++    if (!pre_b) {
++        return;
++    }
++    {
++        std::unique_lock<std::mutex> lk(u_mtx);
++        u_done_cv.wait(lk, [&] { return pre_b->left.load() == 0; });
++    }
++    pre_b.reset();
++}
++
++void llama_xcache::drain() {
++    wait_prefetch();
++    pre_for = -1;
++    std::unique_lock<std::mutex> lk(done_mtx);
++    done_cv.wait(lk, [&] { return n_outstanding.load() == 0; });
++}
++
++//
++// routing
++//
++
++void llama_xcache::poll(int il) {
++    auto & L = layers[il];
++    for (auto it = L.pend.begin(); it != L.pend.end();) {
++        if (it->second->st.load() == XC_DONE) {
++            L.state[it->first] = 1;
++            it = L.pend.erase(it);
++        } else {
++            ++it;
++        }
++    }
++}
++
++int llama_xcache::victim(int il, const std::vector<char> & prot) const {
++    const auto & L = layers[il];
++    int best = -1;
++    double best_rec = 0;
++    for (int s = 0; s < L.cap; ++s) {
++        const int e = L.slot_e[s];
++        if (e < 0 || L.state[e] != 1 || prot[e]) {
++            continue;
++        }
++        if (best < 0 || L.rec[e] < best_rec) {
++            best = e;
++            best_rec = L.rec[e];
++        }
++    }
++    return best;
++}
++
++int llama_xcache::assign(int il, int v, int e) {
++    auto & L = layers[il];
++    const int s = L.slot_of[v];
++    L.slot_of[v] = -1;
++    L.state[v]   = 0;
++    L.slot_of[e] = s;
++    L.slot_e[s]  = e;
++    L.slot_map_host[e] = s;
++    L.dirty = true;
++    return s;
++}
++
++int llama_xcache::claim(int il, int e) {
++    auto & L = layers[il];
++    auto j = L.pend[e];
++    L.pend.erase(e);
++    int exp = XC_QUEUED;
++    if (j->st.compare_exchange_strong(exp, XC_CANCELLED)) {
++        s_cancel++;
++        return j->slot;
++    }
++    const double t0 = xc_now_ms();
++    {
++        std::unique_lock<std::mutex> lk(done_mtx);
++        done_cv.wait(lk, [&] { return j->st.load() == XC_DONE; });
++    }
++    s_wait_pending_ms += xc_now_ms() - t0;
++    return -1;
++}
++
++int llama_xcache::slot_for_must(int il, int e, const std::vector<char> & prot, const std::vector<char> & psel) {
++    auto & L = layers[il];
++    int v = victim(il, prot);
++    if (v >= 0) {
++        return assign(il, v, e);
++    }
++    s_steal++;
++    if (L.pend.empty()) {
++        v = victim(il, psel);
++        GGML_ASSERT(v >= 0 && "xcache: no evictable slot");
++        return assign(il, v, e);
++    }
++    const int pe = L.pend.begin()->first;
++    auto j = L.pend.begin()->second;
++    L.pend.erase(L.pend.begin());
++    int exp = XC_QUEUED;
++    if (!j->st.compare_exchange_strong(exp, XC_CANCELLED)) {
++        std::unique_lock<std::mutex> lk(done_mtx);
++        done_cv.wait(lk, [&] { return j->st.load() == XC_DONE; });
++    }
++    L.state[pe] = 1;
++    return assign(il, pe, e);
++}
++
++void llama_xcache::touch(llama_xc_layer & L, int e) {
++    if (opt.lam <= 0) {
++        L.rec[e] = t_pos;
++        return;
++    }
++    const double k  = L.rec[e];
++    const double sc = k < -1e29 ? 0.0 : std::exp2(k - opt.lam * t_pos);
++    L.rec[e] = std::log2(sc + 1.0) + opt.lam * t_pos;
++}
++
++// small copies between the host and a graph tensor; async on the compute stream when opt.aio
++void llama_xcache::dev_get(ggml_tensor * t, void * dst, size_t n) {
++    ggml_backend_buffer_t buf = t->view_src ? t->view_src->buffer : t->buffer;
++    if (opt.aio && be && !ggml_backend_buffer_is_host(buf)) {
++        ggml_backend_tensor_get_async(be, t, dst, 0, n);
++    } else {
++        ggml_backend_tensor_get(t, dst, 0, n);
++    }
++}
++
++void llama_xcache::dev_set(ggml_tensor * t, const void * src_p, size_t n) {
++    ggml_backend_buffer_t buf = t->view_src ? t->view_src->buffer : t->buffer;
++    if (opt.aio && be && !ggml_backend_buffer_is_host(buf)) {
++        ggml_backend_tensor_set_async(be, t, src_p, 0, n);
++    } else {
++        ggml_backend_tensor_set(t, src_p, 0, n);
++    }
++}
++
++void llama_xcache::on_decode(int il) {
++    const double t_cb0 = xc_now_ms();
++    auto & L = layers[il];
++    const int E = n_expert;
++    const int K = n_used;
++
++    // wanted set = the router top-K computed on the device (sorted by weight)
++    const bool aio = opt.aio && be;
++    bool have_z = false;
++    if (aio) {
++        // ids and logits in one round trip
++        dev_get(L.h_ids, L.io_gids, sizeof(int32_t) * K);
++        if (mode != LLAMA_XC_IDEAL_SYNC) {
++            dev_get(L.h_logits, L.io_gz, sizeof(float) * E);
++            have_z = true;
++        }
++        ggml_backend_synchronize(be);
++    } else {
++        ggml_backend_tensor_get(L.h_ids, L.io_gids, 0, sizeof(int32_t) * K);
++    }
++    if (mode == LLAMA_XC_IDEAL_SYNC) {
++        s_cb_ms += xc_now_ms() - t_cb0;
++        return;
++    }
++    std::vector<int> wi(L.io_gids, L.io_gids + K);
++
++    poll(il);
++    std::vector<char> hit(K);
++    int nh = 0;
++    for (int k = 0; k < K; ++k) {
++        hit[k] = L.state[wi[k]] == 1;
++        nh += hit[k];
++    }
++    s_want += K;
++    s_hit  += nh;
++    s_ltok++;
++
++    if (nh == K) {
++        // all resident: device ids and weights are already right
++        if (trace) {
++            fprintf(trace, "H %d %.0f", il, t_pos);
++            for (int e : wi) {
++                fprintf(trace, " %d", e);
++            }
++            fprintf(trace, "\n");
++        }
++        for (int e : wi) {
++            touch(L, e);
++        }
++        if (L.dirty) {
++            memcpy(L.io_map, L.slot_map_host.data(), sizeof(int32_t) * E);
++            dev_set(L.slot_map, L.io_map, sizeof(int32_t) * E);
++            L.dirty = false;
++        }
++        s_cb_ms += xc_now_ms() - t_cb0;
++        return;
++    }
++
++    if (!have_z) {
++        ggml_backend_tensor_get(L.h_logits, L.io_gz, 0, sizeof(float) * E);
++    }
++    const float * z = L.io_gz;
++
++    std::vector<int> must, bgm;
++    std::vector<double> bgp; // normalized gate weight of each substituted miss
++    std::vector<int> sel = wi;
++    {
++        // normalized gate weights of the wanted set (softmax over the selected logits)
++        std::vector<double> p(K);
++        double sum = 0;
++        for (int k = 0; k < K; ++k) {
++            p[k] = std::exp((double) z[wi[k]] - z[wi[0]]);
++            sum += p[k];
++        }
++        for (int k = 0; k < K; ++k) {
++            if (hit[k]) {
++                continue;
++            }
++            bool wait = false;
++            if (mode == LLAMA_XC_EXACT) {
++                wait = true;
++            } else if (mode == LLAMA_XC_C) {
++                wait = k == 0 || p[k] / sum >= tau;
++            }
++            if (wait) {
++                must.push_back(wi[k]);
++            } else {
++                bgm.push_back(wi[k]);
++                bgp.push_back(p[k] / sum);
++                s_mass += p[k] / sum;
++            }
++        }
++        if (!bgm.empty()) {
++            // top-K among resident experts and the ones we wait for
++            std::vector<int> cand;
++            cand.reserve(E);
++            for (int e = 0; e < E; ++e) {
++                if (L.state[e] == 1) {
++                    cand.push_back(e);
++                }
++            }
++            for (int e : must) {
++                cand.push_back(e);
++            }
++            const int kk = std::min(K, (int) cand.size());
++            std::partial_sort(cand.begin(), cand.begin() + kk, cand.end(), [&](int a, int b) { return z[a] > z[b] || (z[a] == z[b] && a < b); });
++            sel.assign(cand.begin(), cand.begin() + kk);
++            while ((int) sel.size() < K) {
++                sel.push_back(sel.back());
++            }
++        }
++    }
++
++    for (int e : wi) {
++        touch(L, e);
++    }
++    if (!opt.dk) {
++        for (int e : sel) {
++            if (std::find(wi.begin(), wi.end(), e) == wi.end()) {
++                touch(L, e);
++            }
++        }
++    }
++
++    std::vector<char> psel(E, 0);
++    for (int e : sel) {
++        psel[e] = 1;
++    }
++    for (int e : must) {
++        psel[e] = 1;
++    }
++    std::vector<char> prot = psel;
++    for (int e : wi) {
++        prot[e] = 1;
++    }
++
++    const double t0 = xc_now_ms();
++    std::vector<utask> urg;
++    for (int e : must) {
++        if (L.pend.count(e)) {
++            const int s = claim(il, e);
++            if (s >= 0) {
++                urg.push_back({ il, e, s });
++            }
++        } else {
++            urg.push_back({ il, e, slot_for_must(il, e, prot, psel) });
++        }
++        L.state[e] = 1;
++    }
++    run_urgent(urg);
++    s_urg += (int64_t) urg.size();
++    s_stall_ms += xc_now_ms() - t0;
++
++    std::vector<int> sched_log;
++    const int lim = std::max(L.cap - 3 * K, L.cap / 4);
++    const double rlam = std::log(2.0) / opt.rh;
++    for (size_t ib = 0; ib < bgm.size(); ++ib) {
++        const int e = bgm[ib];
++        if (L.pend.count(e)) {
++            continue;
++        }
++        int v = -1;
++        if (opt.rb > 0) {
++            // rent-or-buy: each substitution loses the expert's gate weight; once the decayed loss reaches rb, buy it
++            const double r = L.rv[e] * std::exp(-rlam * (t_pos - L.rt[e])) + bgp[ib];
++            L.rt[e] = t_pos;
++            L.rv[e] = r;
++            if (r < opt.rb) {
++                s_skip++;
++                continue;
++            }
++            v = (int) L.pend.size() < std::min(lim, opt.rq) ? victim(il, prot) : -1;
++            if (v < 0) {
++                s_drop++; // keeps its account, tried again at its next substitution
++                continue;
++            }
++            L.rv[e] = 0;
++        } else {
++            if (!opt.bg) {
++                s_skip++;
++                continue;
++            }
++            v = (int) L.pend.size() < lim ? victim(il, prot) : -1;
++            if (v < 0) {
++                s_drop++;
++                continue;
++            }
++            if (opt.adm && L.rec[e] < L.rec[v]) {
++                // not admitted: its recent use is below the victim's, keep substituting
++                s_skip++;
++                continue;
++            }
++        }
++        if (trace) {
++            sched_log.push_back(e);
++            sched_log.push_back(v);
++        }
++        const int s = assign(il, v, e);
++        L.state[e] = 2;
++        auto j = std::make_shared<llama_xc_job>();
++        j->il = il;
++        j->e = e;
++        j->slot = s;
++        L.pend[e] = j;
++        n_outstanding++;
++        {
++            std::lock_guard<std::mutex> lk(bg_mtx);
++            bg_q.push_back(j);
++        }
++        bg_cv.notify_one();
++    }
++
++    for (int e : sel) {
++        if (std::find(wi.begin(), wi.end(), e) == wi.end()) {
++            s_sub++;
++        }
++    }
++    if (trace) {
++        auto lst = [&](const char * tag, const std::vector<int> & v) {
++            fprintf(trace, " %s", tag);
++            for (int x : v) {
++                fprintf(trace, " %d", x);
++            }
++        };
++        fprintf(trace, "D %d %.0f", il, t_pos);
++        lst("W", wi);
++        lst("M", must);
++        lst("B", bgm);
++        lst("G", sched_log);
++        lst("L", sel);
++        fprintf(trace, " Z");
++        for (int e = 0; e < E; ++e) {
++            fprintf(trace, " %.9g", z[e]);
++        }
++        fprintf(trace, "\n");
++    }
++
++    const bool changed = sel != wi;
++    if (changed) {
++        // weights of the final selection
++        double m = -INFINITY;
++        for (int e : sel) {
++            m = std::max(m, (double) z[e]);
++        }
++        std::vector<double> ex(K);
++        double denom = 0;
++        for (int k = 0; k < K; ++k) {
++            ex[k] = std::exp((double) z[sel[k]] - m);
++            denom += ex[k];
++        }
++        if (!L.norm_w) {
++            double zm = -INFINITY;
++            for (int e = 0; e < E; ++e) {
++                zm = std::max(zm, (double) z[e]);
++            }
++            denom = 0;
++            for (int e = 0; e < E; ++e) {
++                denom += std::exp((double) z[e] - zm);
++            }
++            for (int k = 0; k < K; ++k) {
++                ex[k] = std::exp((double) z[sel[k]] - zm);
++            }
++        }
++        const float sc = (L.w_scale != 0.0f) ? L.w_scale : 1.0f;
++        for (int k = 0; k < K; ++k) {
++            L.io_w[k]   = (float) (ex[k] / denom) * sc;
++            L.io_ids[k] = sel[k];
++        }
++        dev_set(L.h_ids, L.io_ids, sizeof(int32_t) * K);
++        dev_set(L.h_w, L.io_w, sizeof(float) * K);
++    }
++    if (L.dirty) {
++        memcpy(L.io_map, L.slot_map_host.data(), sizeof(int32_t) * E);
++        dev_set(L.slot_map, L.io_map, sizeof(int32_t) * E);
++        L.dirty = false;
++    }
++
++    s_cb_ms += xc_now_ms() - t_cb0;
++}
+diff --git a/src/llama-xcache.h b/src/llama-xcache.h
+new file mode 100644
+index 0000000..b5b1398
+--- /dev/null
++++ b/src/llama-xcache.h
+@@ -0,0 +1,264 @@
++#pragma once
++
++// Expert cache for MoE decode (experimental, env LLAMA_XCACHE=1).
++// Each MoE layer keeps a small pool of expert slots in device memory. The router still picks
++// the experts, but on a miss the cache can wait for the load (exact), wait only for the rank-1
++// expert (C with tau > 1), wait for rank-1 or heavy experts (C), or never wait (B). Experts that
++// are not waited for are replaced by the best resident experts and loaded in the background.
++
++#include "ggml.h"
++#include "ggml-backend.h"
++
++#include <atomic>
++#include <cstdio>
++#include <condition_variable>
++#include <deque>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <unordered_map>
++#include <vector>
++
++struct llama_model;
++struct llama_xcache_stats;
++
++enum llama_xc_mode {
++    LLAMA_XC_IDEAL = 0, // no host round trip, fixed slot map (upper bound, outputs not meaningful)
++    LLAMA_XC_IDEAL_SYNC,
++    LLAMA_XC_EXACT,
++    LLAMA_XC_C,
++    LLAMA_XC_B,
++};
++
++enum llama_xc_src {
++    LLAMA_XC_SRC_NVME = 0, // O_DIRECT reads from the GGUF file
++    LLAMA_XC_SRC_RAM,      // copy from the host tensor (mmap / page cache)
++};
++
++struct llama_xc_job;
++
++struct llama_xc_layer {
++    int il = -1;
++    std::vector<ggml_tensor *> src;   // host expert tensors
++    std::vector<ggml_tensor *> pool;  // device slot pools, same type, ne[2] = cap_max
++    std::vector<ggml_tensor *> stg;   // device staging for prompt processing, full layer layout (MoE layers alternate between two areas)
++    std::vector<size_t>        nb2;   // bytes per expert per tensor
++    std::vector<uint64_t>      foff;  // file offset of the tensor data
++    ggml_tensor * slot_map = nullptr; // I32 [1, n_expert]
++
++    int cap_max = 0; // slots in the pools of this layer
++    int cap     = 0; // slots in use (configure)
++
++    std::vector<int8_t>  state;   // 0 absent, 1 resident, 2 loading
++    std::vector<int32_t> slot_of;
++    std::vector<int32_t> slot_e;
++    std::vector<double>  rec;
++    std::vector<double>  prompt_rec;
++    std::vector<int32_t> prompt_ids; // router top-K of every prompt token, in order (n_used per token)
++    std::vector<double>  rv;         // regret admission: decayed substituted gate mass per expert
++    std::vector<double>  rt;         // position of the last regret update
++    std::vector<int32_t> slot_map_host;
++    std::unordered_map<int, std::shared_ptr<llama_xc_job>> pend;
++
++    // hooks of the current graph
++    ggml_tensor * h_logits = nullptr;
++    ggml_tensor * h_ids    = nullptr;
++    ggml_tensor * h_w      = nullptr;
++    bool  norm_w  = true;
++    float w_scale = 1.0f;
++    bool  dirty   = false; // slot_map_host differs from the device copy
++
++    // pinned per-layer scratch for the small routing copies (async mode)
++    int32_t * io_gids = nullptr; // D2H: router ids
++    float   * io_gz   = nullptr; // D2H: router logits
++    int32_t * io_ids  = nullptr; // H2D: final ids
++    float   * io_w    = nullptr; // H2D: final weights
++    int32_t * io_map  = nullptr; // H2D: slot map
++};
++
++// policy / engine options (set per run with llama_xcache_set_opts, all off by default)
++struct llama_xc_opts {
++    bool   aio   = false; // async small copies on the compute stream, one sync per layer
++    bool   uf    = false; // urgent first: background reads do not start while urgent reads run
++    bool   upart = false; // urgent expert split into its tensor parts, read in parallel
++    bool   adm   = false; // admission: background-load a missed expert only if its score >= the victim's
++    bool   sbg   = false; // diagnostic: wait for all background loads at the end of every token
++    bool   bg    = true;  // background-load substituted misses (false: the set changes only through waited loads)
++    double lam   = 0.0;   // LRFU decay per token (0 = plain LRU)
++    int    pf    = 0;     // prefill: read expert tensors this many layers ahead into the page cache
++    bool   ef    = false; // prefill: start filling the cache of a layer as soon as its prompt routing is known
++    bool   ps    = false; // prefill streaming: read only the experts the prompt uses into a device staging area
++                          // (from the file, or from the slot pool when resident) and fill the cache from it
++    bool   fresh = false; // measurement: empty the slot pools at the start of every prompt
++    double pso   = 0.0;   // prompt streaming overlap: when a layer used at least this fraction of the experts, read all
++                          // non-resident experts of the next layer while the device computes (0 = off)
++    int    ram   = 1;     // 1 (default): per expert, copy from the page cache when it is resident there (mincore), read the file otherwise
++                          // 0: always read the file; 2: auto, as 1 when at least ramthr of the expert pages are resident, else 0 (decided per set_opts)
++    double ramthr = 0.5;
++    double fe    = 0.0;   // frequency score: EMA of uses with this weight per token (sets lam = -log2(1 - fe)); the score
++                          // starts from every use of the prompt and the initial set is the best-scored experts (0 = off)
++    bool   dk    = false; // demand keying: only the router's experts count as uses (not the substitutes)
++    double rb    = 0.0;   // rent-or-buy admission: a substituted expert accumulates its gate weight (decayed with half-life
++                          // rh tokens); when it reaches rb, it is read in the background in place of the lowest-scored
++                          // resident and its account is reset (0 = off)
++    double rh    = 512.0;
++    int    rq    = 8;     // at most this many admission reads in flight per layer
++};
++
++struct llama_xcache {
++    llama_xcache(const llama_model & model, const char * gguf_path, float frac_max);
++    ~llama_xcache();
++
++    bool layer_on(int il) const { return il >= 0 && il < (int) layers.size() && layers[il].il >= 0; }
++
++    // graph build
++    void          begin_graph();
++    ggml_tensor * get_pool(int il, ggml_tensor * src) const;
++    ggml_tensor * get_slot_map(int il) const { return layers[il].slot_map; }
++    void          hook_prefill(int il, ggml_tensor * ids);
++    void          hook_decode(int il, ggml_tensor * logits, ggml_tensor * ids, ggml_tensor * w, bool norm_w, float w_scale);
++
++    static bool eval_cb(ggml_tensor * t, bool ask, void * user_data);
++
++    void ubatch_done(int n_tokens);
++
++    // control
++    void begin_prompt();
++    void set_opts(const char * s);
++    void evict_host(); // drop the host expert pages (mapping and page cache), for cold-start measurements
++    bool prefill_stream() const { return opt.ps && buf_stage != nullptr; }
++    ggml_tensor * get_stage(int il, ggml_tensor * src) const;
++    int  configure(int mode, float frac, int src, float tau);
++    void get_stats(llama_xcache_stats * out) const;
++    bool   ram_on   = true;  // page cache source in effect (from opt.ram)
++    double ram_frac = -1;    // resident fraction of the expert pages at the last auto decision
++    bool want_callback() const { return mode != LLAMA_XC_IDEAL || capture_prompt || prefill_stream(); }
++
++    // state
++    int n_expert = 0;
++    int n_used   = 0;
++    int cap_max  = 0;
++    int cap      = 0;
++    int mode     = LLAMA_XC_EXACT;
++    int src      = LLAMA_XC_SRC_NVME;
++    float tau    = 2.0f;
++    bool capture_prompt = true;
++    double t_pos  = 0; // decode position for recency
++    int prompt_pos = 0;
++
++    std::vector<llama_xc_layer> layers;
++
++    llama_xc_opts      opt;
++    ggml_backend_t     be       = nullptr; // compute backend of the pool device (set by the context)
++    ggml_backend_dev_t pool_dev = nullptr;
++
++private:
++    struct hook { int il; int kind; };
++    std::unordered_map<const ggml_tensor *, hook> hooks;
++
++    ggml_context          * ctx_pool = nullptr;
++    ggml_backend_buffer_t   buf_pool = nullptr;
++    ggml_backend_buffer_t   buf_host = nullptr;
++    ggml_backend_buffer_t   buf_io   = nullptr;
++    ggml_context          * ctx_stage = nullptr;
++    ggml_backend_buffer_t   buf_stage = nullptr;
++    ggml_backend_buffer_type_t buft_dev = nullptr;
++    bool alloc_stage();
++    std::vector<uint8_t>    io_fallback;
++    uint8_t               * host_base = nullptr;
++    std::vector<uint8_t>    host_fallback;
++    size_t                  stage_size = 0;
++    int                     fd_direct = -1;
++    int                     fd_buffered = -1;
++
++    // stats
++    FILE * trace = nullptr; // env LLAMA_XCACHE_TRACE: decisions per layer and token (debugging)
++    double s_stall_ms = 0, s_wait_pending_ms = 0, s_cb_ms = 0, s_mass = 0;
++    int64_t s_ltok = 0;
++    int64_t s_tok = 0, s_want = 0, s_hit = 0, s_sub = 0, s_urg = 0, s_cancel = 0, s_drop = 0, s_steal = 0, s_skip = 0;
++    std::atomic<int64_t> s_bg{0};
++    std::atomic<int64_t> s_bytes{0};
++    // prompt processing (reset by begin_prompt)
++    double s_pf_ms = 0;
++    std::atomic<int64_t> s_pf_read{0};
++    std::atomic<int64_t> s_pf_d2d{0};
++    std::atomic<int64_t> s_pf_ram{0};
++    int64_t s_pf_used = 0; // sum over layers and ubatches of distinct experts used
++    int64_t s_pf_pre  = 0; // experts read ahead for the next layer
++    int64_t s_pf_pre_hit = 0; // of those, used
++    size_t expert_bytes = 0;
++
++    // background loader
++    std::vector<std::thread> bg_threads;
++    std::deque<std::shared_ptr<llama_xc_job>> bg_q;
++    std::mutex bg_mtx;
++    std::condition_variable bg_cv;
++    std::mutex done_mtx;
++    std::condition_variable done_cv;
++    std::atomic<int> n_outstanding{0};
++    std::atomic<bool> stopping{false};
++    std::atomic<int>  urg_active{0};
++
++    // prefill read-ahead
++    std::thread             pf_thread;
++    std::mutex              pf_mtx;
++    std::condition_variable pf_cv;
++    bool pf_on   = false;
++    int  pf_cur  = -1;
++    int  pf_next = 0;
++    void pf_worker();
++
++    // early fill during prefill
++    bool              ef_active = false;
++    int               ef_cap    = 0;
++    std::vector<char> ef_filled;
++
++    // urgent loader (parallel)
++    // kind: file -> pool slot, file -> staging, pool slot -> staging, staging -> pool slot
++    enum { XT_FILE_POOL = 0, XT_FILE_STAGE, XT_POOL_STAGE, XT_STAGE_POOL };
++    struct utask { int il; int e; int slot; int part = -1; int kind = XT_FILE_POOL; }; // part < 0: whole expert
++    struct ubatch {
++        std::vector<utask> tasks;
++        std::atomic<int>   next{0};
++        std::atomic<int>   left{0};
++    };
++    std::vector<std::thread> u_threads;
++    std::shared_ptr<ubatch> u_cur;
++    int u_gen = 0;
++    std::mutex u_mtx;
++    std::condition_variable u_cv;
++    std::condition_variable u_done_cv;
++
++    // prompt streaming read-ahead of the next layer (runs on the urgent workers while the device computes)
++    std::shared_ptr<ubatch> pre_b;
++    int               pre_for = -1;
++    std::vector<char> pre_have;
++    void wait_prefetch();
++
++
++    uint8_t * stage(int i) const { return host_base + (size_t) i * stage_size; }
++    const uint8_t * read_tensor_part(int il, int k, int e, uint8_t * dst);
++    void load_part(int il, int e, int slot, int k, uint8_t * stg, int kind = XT_FILE_POOL);
++    void load_expert(int il, int e, int slot, uint8_t * stg, bool yield_to_urgent = false, int kind = XT_FILE_POOL);
++    void d2d(ggml_tensor * a, size_t a_off, ggml_tensor * b, size_t b_off, size_t n);
++    static bool resident(const void * p, size_t n);
++    double resident_frac(); // sampled over every 4th MoE layer
++    std::vector<unsigned char> mc_vec;
++    void prefill_load(int il, const std::vector<int> & cnt);
++    void run_task(const utask & tk, uint8_t * stg);
++    void touch(llama_xc_layer & L, int e);
++    void dev_get(ggml_tensor * t, void * dst, size_t n);
++    void dev_set(ggml_tensor * t, const void * src, size_t n);
++    void run_urgent(const std::vector<utask> & tasks);
++    void bg_worker(int wid);
++    void u_worker(int wid);
++    void drain();
++    void poll(int il);
++    int  victim(int il, const std::vector<char> & prot) const;
++    int  assign(int il, int victim_e, int e);
++    int  slot_for_must(int il, int e, const std::vector<char> & prot, const std::vector<char> & psel);
++    int  claim(int il, int e);
++    void on_decode(int il);
++    void on_prefill(int il, ggml_tensor * ids);
++};
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index c8ad1db..5145f55 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -20,6 +20,7 @@ else()
+     add_subdirectory(llama-bench)
+     add_subdirectory(completion)
+     add_subdirectory(perplexity)
++    add_subdirectory(xcache-bench)
+     add_subdirectory(quantize)
+     if (LLAMA_BUILD_SERVER)
+         add_subdirectory(ui)
+diff --git a/tools/xcache-bench/CMakeLists.txt b/tools/xcache-bench/CMakeLists.txt
+new file mode 100644
+index 0000000..6cc630e
+--- /dev/null
++++ b/tools/xcache-bench/CMakeLists.txt
+@@ -0,0 +1,4 @@
++set(TARGET llama-xcache-bench)
++add_executable(${TARGET} xcache-bench.cpp)
++target_link_libraries(${TARGET} PRIVATE llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
+diff --git a/tools/xcache-bench/xcache-bench.cpp b/tools/xcache-bench/xcache-bench.cpp
+new file mode 100644
+index 0000000..060774a
+--- /dev/null
++++ b/tools/xcache-bench/xcache-bench.cpp
+@@ -0,0 +1,640 @@
++// Teacher-forced decode benchmark for the expert cache (LLAMA_XCACHE=1) and for stock llama.cpp.
++// For each session: prefill P tokens once, save the sequence state, then for every plan entry restore
++// the state and decode D tokens one by one (feeding the reference tokens), timing each token and
++// recording the NLL of the next reference token.
++// With --gen: for every plan entry, greedy generation from each prompt of the file (one JSON line per prompt).
++
++#include "llama.h"
++#include "ggml-backend.h"
++
++#include <algorithm>
++#include <chrono>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <map>
++#include <sstream>
++#include <string>
++#include <vector>
++
++struct plan_item {
++    std::string key;
++    std::string mode; // "stock" or xcache mode
++    float frac = 0.25f;
++    std::string src = "nvme";
++    float tau = 2.0f;
++    std::string opts;
++};
++
++struct run_acc {
++    std::vector<double> ms;
++    std::vector<double> nll;
++    std::vector<int>    am;
++    llama_xcache_stats  st = {};
++    double cfg_ms = 0;
++    // per quarter of the decode (by position): wanted, hits, bytes
++    double q_want[4] = {0, 0, 0, 0}, q_hit[4] = {0, 0, 0, 0}, q_bytes[4] = {0, 0, 0, 0};
++};
++
++static double now_ms() {
++    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++static std::vector<std::string> split(const std::string & s, char d) {
++    std::vector<std::string> out;
++    std::stringstream ss(s);
++    std::string x;
++    while (std::getline(ss, x, d)) {
++        if (!x.empty()) {
++            out.push_back(x);
++        }
++    }
++    return out;
++}
++
++static double pct(std::vector<double> v, double p) {
++    if (v.empty()) {
++        return 0;
++    }
++    std::sort(v.begin(), v.end());
++    const double idx = p / 100.0 * (v.size() - 1);
++    const size_t i0 = (size_t) idx;
++    const size_t i1 = std::min(v.size() - 1, i0 + 1);
++    return v[i0] + (v[i1] - v[i0]) * (idx - i0);
++}
++
++int main(int argc, char ** argv) {
++    std::string model_path, tokens_path, out_path, plan_s = "stock", prompts_s, prefill_opts, gen_path, gen_range;
++    int ngl = 99, n_cpu_moe = 0, n_threads = 8, D = 256, max_sessions = 0, warm = 8, n_ubatch = 0, max_new = 1024;
++    bool cold = false;
++
++    for (int i = 1; i < argc; ++i) {
++        std::string a = argv[i];
++        auto next = [&]() -> std::string {
++            if (i + 1 >= argc) {
++                fprintf(stderr, "missing value for %s\n", a.c_str());
++                exit(1);
++            }
++            return argv[++i];
++        };
++        if      (a == "-m")            { model_path = next(); }
++        else if (a == "--tokens")      { tokens_path = next(); }
++        else if (a == "--out")         { out_path = next(); }
++        else if (a == "--plan")        { plan_s = next(); }
++        else if (a == "-ngl")          { ngl = atoi(next().c_str()); }
++        else if (a == "--n-cpu-moe")   { n_cpu_moe = atoi(next().c_str()); }
++        else if (a == "-t")            { n_threads = atoi(next().c_str()); }
++        else if (a == "--decode")      { D = atoi(next().c_str()); }
++        else if (a == "--sessions")    { max_sessions = atoi(next().c_str()); }
++        else if (a == "--warm")        { warm = atoi(next().c_str()); }
++        else if (a == "--prompts")     { prompts_s = next(); }         // prompt lengths, comma separated
++        else if (a == "--prefill-opts"){ prefill_opts = next(); }      // xcache options during prompt processing
++        else if (a == "--cold")        { cold = true; }                // drop host expert pages before every prompt
++        else if (a == "--ubatch")      { n_ubatch = atoi(next().c_str()); } // physical batch (default: the longest prompt)
++        else if (a == "--gen")         { gen_path = next(); }          // greedy generation: int32 N, then int32 len + tokens per prompt
++        else if (a == "--gen-range")   { gen_range = next(); }         // a:b, prompt indices of the generation file
++        else if (a == "--max-new")     { max_new = atoi(next().c_str()); }
++        else { fprintf(stderr, "unknown arg %s\n", a.c_str()); return 1; }
++    }
++
++    // plan: "stock" or "mode:frac:src[:tau[:opts]],..." with opts "key=value+key=value"
++    std::vector<plan_item> plan;
++    for (const auto & p : split(plan_s, ',')) {
++        auto f = split(p, ':');
++        plan_item it;
++        it.mode = f[0];
++        if (f.size() > 1) { it.frac = atof(f[1].c_str()); }
++        if (f.size() > 2) { it.src  = f[2]; }
++        if (f.size() > 3) { it.tau  = atof(f[3].c_str()); }
++        if (f.size() > 4) { it.opts = f[4]; }
++        char buf[128];
++        if (it.mode == "stock") {
++            snprintf(buf, sizeof(buf), "stock");
++        } else {
++            snprintf(buf, sizeof(buf), "%s@%.3g/%s%s", it.mode == "C" && it.tau > 1.0f ? "C1" : it.mode.c_str(), it.frac, it.src.c_str(),
++                     (it.mode == "C" && it.tau <= 1.0f) ? (":" + std::to_string(it.tau).substr(0, 4)).c_str() : "");
++        }
++        it.key = buf;
++        if (!it.opts.empty()) {
++            it.key += "|" + it.opts;
++        }
++        plan.push_back(it);
++    }
++
++    const bool gen = !gen_path.empty();
++    std::vector<std::vector<llama_token>> gp;
++    int g0 = 0;
++    if (gen) {
++        std::ifstream gf(gen_path, std::ios::binary);
++        int32_t ng = 0;
++        gf.read((char *) &ng, sizeof(ng));
++        std::vector<std::vector<llama_token>> all(std::max(0, ng));
++        for (auto & p : all) {
++            int32_t n = 0;
++            gf.read((char *) &n, sizeof(n));
++            p.resize(n);
++            gf.read((char *) p.data(), sizeof(llama_token) * n);
++        }
++        int g1 = (int) all.size();
++        if (!gen_range.empty() && sscanf(gen_range.c_str(), "%d:%d", &g0, &g1) != 2) {
++            fprintf(stderr, "bad --gen-range %s\n", gen_range.c_str());
++            return 1;
++        }
++        g0 = std::max(0, g0);
++        g1 = std::min(g1, (int) all.size());
++        if (!gf || g0 >= g1) {
++            fprintf(stderr, "no prompts in %s range %d:%d\n", gen_path.c_str(), g0, g1);
++            return 1;
++        }
++        gp.assign(all.begin() + g0, all.begin() + g1);
++    }
++
++    // tokens: int32 S, T, P, then S*T tokens
++    std::ifstream fin;
++    int32_t hdr[3] = { 0, 0, 0 };
++    if (!gen) {
++        fin.open(tokens_path, std::ios::binary);
++        fin.read((char *) hdr, sizeof(hdr));
++    }
++    const int S = hdr[0], T = hdr[1];
++    std::vector<int> prompts;
++    for (const auto & x : split(prompts_s, ',')) {
++        prompts.push_back(atoi(x.c_str()));
++    }
++    if (gen) {
++        prompts.assign(1, 1);
++        for (const auto & p : gp) {
++            prompts[0] = std::max(prompts[0], (int) p.size());
++        }
++    }
++    if (prompts.empty()) {
++        prompts.push_back(hdr[2]);
++    }
++    const int P_max = *std::max_element(prompts.begin(), prompts.end());
++    int P = prompts[0];
++    std::vector<int32_t> toks((size_t) S * T);
++    if (!gen) {
++        fin.read((char *) toks.data(), sizeof(int32_t) * toks.size());
++    }
++    const int n_sess = max_sessions > 0 ? std::min(S, max_sessions) : S;
++    D = gen ? max_new : std::min(D, T - P_max - 1);
++
++    llama_backend_init();
++
++    // experts of the first n_cpu_moe layers stay in host memory (mmap)
++    std::vector<std::string> patterns;
++    std::vector<llama_model_tensor_buft_override> ov;
++    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
++    ggml_backend_buffer_type_t cpu_buft = ggml_backend_dev_buffer_type(cpu_dev);
++    for (int il = 0; il < n_cpu_moe; ++il) {
++        patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate|gate_up)_(ch|)exps");
++    }
++    for (auto & p : patterns) {
++        ov.push_back({ p.c_str(), cpu_buft });
++    }
++    ov.push_back({ nullptr, nullptr });
++
++    llama_model_params mp = llama_model_default_params();
++    mp.n_gpu_layers = ngl;
++    mp.tensor_buft_overrides = ov.data();
++    const double t_load0 = now_ms();
++    llama_model * model = llama_model_load_from_file(model_path.c_str(), mp);
++    if (!model) {
++        fprintf(stderr, "failed to load model\n");
++        return 1;
++    }
++    const double t_load = now_ms() - t_load0;
++
++    llama_context_params cp = llama_context_default_params();
++    cp.n_ctx     = P_max + D + 64;
++    cp.n_batch   = std::max(512, P_max);
++    cp.n_ubatch  = n_ubatch > 0 ? n_ubatch : std::max(512, P_max);
++    cp.n_seq_max = 1;
++    cp.n_threads = n_threads;
++    cp.n_threads_batch = n_threads;
++    cp.no_perf   = true;
++    llama_context * ctx = llama_init_from_model(model, cp);
++    if (!ctx) {
++        fprintf(stderr, "failed to create context\n");
++        return 1;
++    }
++    const bool xc = llama_xcache_enabled(ctx);
++    const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
++    llama_memory_t mem = llama_get_memory(ctx);
++
++    fprintf(stderr, "xcache-bench: sessions %d x (P %d + D %d), plan %zu entries, xcache %d, load %.1fs\n",
++            n_sess, P, D, plan.size(), (int) xc, t_load / 1000.0);
++
++    if (gen) {
++        // greedy generation: for every plan entry and prompt, process the prompt, fill the cache from it, then decode
++        // until an end-of-generation token or max_new tokens; one JSON line per prompt
++        const llama_vocab * vocab = llama_model_get_vocab(model);
++        auto argmax = [&]() {
++            const float * lg = llama_get_logits_ith(ctx, -1);
++            int am = 0;
++            for (int v = 1; v < n_vocab; ++v) {
++                if (lg[v] > lg[am]) {
++                    am = v;
++                }
++            }
++            return (llama_token) am;
++        };
++        auto gen_prompt = [&](const std::vector<llama_token> & p, const plan_item & it, double * t_pf) {
++            llama_memory_clear(mem, true);
++            if (xc) {
++                llama_xcache_set_opts(ctx, prefill_opts.c_str());
++                llama_xcache_begin_prompt(ctx);
++            }
++            std::vector<llama_token> pt(p);
++            const double t0 = now_ms();
++            if (llama_decode(ctx, llama_batch_get_one(pt.data(), (int32_t) pt.size())) != 0) {
++                fprintf(stderr, "prefill failed\n");
++                exit(1);
++            }
++            const llama_token t = argmax();
++            *t_pf = now_ms() - t0;
++            if (xc && it.mode != "stock") {
++                llama_xcache_set_opts(ctx, it.opts.c_str());
++                if (llama_xcache_configure(ctx, it.mode.c_str(), it.frac, it.src.c_str(), it.tau) != 0) {
++                    fprintf(stderr, "configure failed for %s\n", it.key.c_str());
++                    exit(1);
++                }
++            }
++            return t;
++        };
++        {
++            double t_pf = 0;
++            llama_token t = gen_prompt(gp[0], plan[0], &t_pf);
++            for (int i = 0; i < warm; ++i) {
++                if (llama_decode(ctx, llama_batch_get_one(&t, 1)) != 0) {
++                    fprintf(stderr, "decode failed\n");
++                    exit(1);
++                }
++                t = argmax();
++            }
++        }
++        std::ofstream gout(out_path);
++        for (const auto & it : plan) {
++            for (size_t gi = 0; gi < gp.size(); ++gi) {
++                double t_pf = 0;
++                const double c0 = now_ms();
++                llama_token t = gen_prompt(gp[gi], it, &t_pf);
++                const double t_cfg = now_ms() - c0 - t_pf;
++                std::vector<llama_token> out;
++                double ms = 0;
++                bool eog = false;
++                for (;;) {
++                    out.push_back(t);
++                    if (llama_vocab_is_eog(vocab, t)) {
++                        eog = true;
++                        break;
++                    }
++                    if ((int) out.size() >= max_new) {
++                        break;
++                    }
++                    const double d0 = now_ms();
++                    if (llama_decode(ctx, llama_batch_get_one(&t, 1)) != 0) {
++                        fprintf(stderr, "decode failed\n");
++                        exit(1);
++                    }
++                    llama_get_logits_ith(ctx, -1);
++                    ms += now_ms() - d0;
++                    t = argmax();
++                }
++                llama_xcache_stats st = {};
++                if (xc && it.mode != "stock") {
++                    llama_xcache_get_stats(ctx, &st);
++                }
++                const int n_dec = (int) out.size() - 1;
++                gout << "{\"plan\":\"" << it.key << "\",\"i\":" << g0 + (int) gi << ",\"np\":" << gp[gi].size() << ",\"n\":" << out.size()
++                     << ",\"eog\":" << (eog ? 1 : 0) << ",\"pf_ms\":" << t_pf << ",\"cfg_ms\":" << t_cfg << ",\"ms\":" << ms
++                     << ",\"mass\":" << st.mass << ",\"ltok\":" << st.n_ltok << ",\"want\":" << st.n_want << ",\"hit\":" << st.n_hit
++                     << ",\"sub\":" << st.n_sub << ",\"bg\":" << st.n_bg << ",\"bytes\":" << st.bytes << ",\"stall_ms\":" << st.stall_ms
++                     << ",\"toks\":[";
++                for (size_t k = 0; k < out.size(); ++k) {
++                    gout << (k ? "," : "") << out[k];
++                }
++                gout << "]}\n";
++                gout.flush();
++                fprintf(stderr, "gen %-22s %4d  n %4zu%s  %6.2f ms/tok  mass %.4f  prefill %.2fs\n", it.key.c_str(), g0 + (int) gi,
++                        out.size(), eog ? "" : "+", n_dec > 0 ? ms / n_dec : 0.0, st.n_ltok > 0 ? st.mass / st.n_ltok : 0.0, t_pf / 1000.0);
++            }
++        }
++        printf("GEN_DONE %zu prompts x %zu plans\n", gp.size(), plan.size());
++        fflush(stdout);
++        llama_free(ctx);
++        llama_model_free(model);
++        llama_backend_free();
++        return 0;
++    }
++
++    std::map<std::string, run_acc> acc;
++    std::vector<double> ttft;
++    std::map<int, std::vector<double>> ttft_p, cfg_p; // per prompt length: prompt processing, cache fill of the first plan entry
++    // prompt streaming: load ms, GB read from the file, GB copied on the device, experts used, read ahead, read ahead and used,
++    // GB copied from the page cache; decode ms of the first plan entry per session
++    std::map<int, std::vector<double>> pfms_p, pfrd_p, pfdd_p, pfus_p, pfpr_p, pfph_p, pfrm_p, rfr_p, ron_p, dec_p;
++    std::vector<uint8_t> state;
++    size_t off = 0; // token offset inside a session (the warm-up uses the end of session 0, which is never measured)
++
++    auto prefill = [&](int s) -> double {
++        llama_memory_clear(mem, true);
++        if (xc) {
++            if (cold) {
++                llama_xcache_evict_host(ctx);
++            }
++            llama_xcache_set_opts(ctx, prefill_opts.c_str());
++            llama_xcache_begin_prompt(ctx);
++        }
++        std::vector<llama_token> pt(toks.begin() + (size_t) s * T + off, toks.begin() + (size_t) s * T + off + P);
++        const double t0 = now_ms();
++        if (llama_decode(ctx, llama_batch_get_one(pt.data(), P)) != 0) {
++            fprintf(stderr, "prefill failed\n");
++            exit(1);
++        }
++        llama_get_logits_ith(ctx, -1);
++        const double dt = now_ms() - t0;
++        if (xc) {
++            llama_xcache_stats ps;
++            llama_xcache_get_stats(ctx, &ps);
++            pfms_p[P].push_back(ps.pf_ms);
++            pfrd_p[P].push_back(ps.pf_read_bytes / 1e9);
++            pfrm_p[P].push_back(ps.pf_ram_bytes / 1e9);
++            pfdd_p[P].push_back(ps.pf_d2d_bytes / 1e9);
++            pfus_p[P].push_back((double) ps.pf_used);
++            pfpr_p[P].push_back((double) ps.pf_pre);
++            pfph_p[P].push_back((double) ps.pf_pre_hit);
++            rfr_p[P].push_back(ps.ram_frac); // option ram=2: resident fraction of the expert pages (-1: not decided)
++            ron_p[P].push_back((double) ps.ram_on);
++        }
++        state.resize(llama_state_seq_get_size(ctx, 0));
++        llama_state_seq_get_data(ctx, state.data(), state.size(), 0);
++        return dt;
++    };
++
++    auto run = [&](int s, const plan_item & it, int n_dec, run_acc * a) {
++        llama_memory_seq_rm(mem, 0, -1, -1);
++        llama_state_seq_set_data(ctx, state.data(), state.size(), 0);
++        if (it.mode != "stock") {
++            const double c0 = now_ms();
++            llama_xcache_set_opts(ctx, it.opts.c_str());
++            if (llama_xcache_configure(ctx, it.mode.c_str(), it.frac, it.src.c_str(), it.tau) != 0) {
++                fprintf(stderr, "configure failed for %s\n", it.key.c_str());
++                exit(1);
++            }
++            if (a) {
++                a->cfg_ms += now_ms() - c0;
++                if (&it == &plan[0]) {
++                    cfg_p[P].push_back(now_ms() - c0);
++                }
++            }
++        }
++        const bool track = a && xc && it.mode != "stock";
++        int64_t pw = 0, ph = 0, pb = 0;
++        int q = 0;
++        for (int i = 0; i < n_dec; ++i) {
++            llama_token tk = toks[(size_t) s * T + off + P + i];
++            const double t0 = now_ms();
++            if (llama_decode(ctx, llama_batch_get_one(&tk, 1)) != 0) {
++                fprintf(stderr, "decode failed\n");
++                exit(1);
++            }
++            const float * lg = llama_get_logits_ith(ctx, -1);
++            const double dt = now_ms() - t0;
++            if (!a) {
++                continue;
++            }
++            const int target = toks[(size_t) s * T + off + P + i + 1];
++            float mx = lg[0];
++            int am = 0;
++            for (int v = 1; v < n_vocab; ++v) {
++                if (lg[v] > mx) {
++                    mx = lg[v];
++                    am = v;
++                }
++            }
++            double se = 0;
++            for (int v = 0; v < n_vocab; ++v) {
++                se += std::exp((double) lg[v] - mx);
++            }
++            a->ms.push_back(dt);
++            a->nll.push_back(std::log(se) + mx - lg[target]);
++            a->am.push_back(am);
++            if (track && q < 4 && i + 1 == (int) ((int64_t) n_dec * (q + 1) / 4)) {
++                llama_xcache_stats qs;
++                llama_xcache_get_stats(ctx, &qs);
++                a->q_want[q]  += (double) (qs.n_want - pw);
++                a->q_hit[q]   += (double) (qs.n_hit - ph);
++                a->q_bytes[q] += (double) (qs.bytes - pb);
++                pw = qs.n_want;
++                ph = qs.n_hit;
++                pb = qs.bytes;
++                q++;
++            }
++        }
++        if (a && xc && it.mode != "stock") {
++            llama_xcache_stats st;
++            llama_xcache_get_stats(ctx, &st);
++            a->st.stall_ms += st.stall_ms;
++            a->st.wait_pending_ms += st.wait_pending_ms;
++            a->st.cb_ms += st.cb_ms;
++            a->st.n_tok += st.n_tok;
++            a->st.n_want += st.n_want;
++            a->st.n_hit += st.n_hit;
++            a->st.n_sub += st.n_sub;
++            a->st.n_urg += st.n_urg;
++            a->st.n_bg += st.n_bg;
++            a->st.n_cancel += st.n_cancel;
++            a->st.n_drop += st.n_drop;
++            a->st.n_steal += st.n_steal;
++            a->st.bytes += st.bytes;
++            a->st.n_skip += st.n_skip;
++            a->st.mass += st.mass;
++            a->st.n_ltok += st.n_ltok;
++        }
++    };
++
++    // warm-up on the end of the first session, so that no measured prompt has been seen before
++    if (T - P - warm - 2 >= P_max + D + 1) {
++        off = (size_t) (T - P - warm - 2);
++    }
++    prefill(0);
++    for (const auto & it : plan) {
++        run(0, it, warm, nullptr);
++    }
++    off = 0;
++    pfms_p.clear();
++    pfrd_p.clear();
++    pfdd_p.clear();
++    pfus_p.clear();
++    pfpr_p.clear();
++    pfph_p.clear();
++    pfrm_p.clear();
++    rfr_p.clear();
++    ron_p.clear();
++    dec_p.clear();
++
++    for (int pi = 0; pi < (int) prompts.size(); ++pi)
++    for (int s = 0; s < n_sess; ++s) {
++        P = prompts[pi];
++        const double tt = prefill(s);
++        ttft.push_back(tt);
++        ttft_p[P].push_back(tt);
++        for (const auto & it : plan) {
++            run_acc & a = acc[it.key];
++            const size_t n0 = a.ms.size();
++            run(s, it, D, &a);
++            double m = 0, nl = 0;
++            for (size_t i = n0; i < a.ms.size(); ++i) {
++                m += a.ms[i];
++                nl += a.nll[i];
++            }
++            if (&it == &plan[0]) {
++                dec_p[P].push_back(m); // time to generate the D tokens of this session
++            }
++            fprintf(stderr, "session %d/%d %-22s %7.2f ms/tok  ppl %.3f  (prefill %.2fs)\n", s + 1, n_sess, it.key.c_str(),
++                    m / (a.ms.size() - n0), std::exp(nl / (a.ms.size() - n0)), tt / 1000.0);
++        }
++    }
++
++    // summary
++    const run_acc * ref = nullptr;
++    for (const auto & it : plan) {
++        if (it.mode == "exact" || it.mode == "stock") {
++            ref = &acc[it.key];
++            break;
++        }
++    }
++    std::ostringstream js, raw;
++    js << "{\"model\":\"" << model_path << "\",\"n_cpu_moe\":" << n_cpu_moe << ",\"threads\":" << n_threads
++       << ",\"xcache\":" << (xc ? 1 : 0) << ",\"P\":" << P << ",\"D\":" << D << ",\"sessions\":" << n_sess
++       << ",\"load_s\":" << t_load / 1000.0 << ",\"ttft_ms\":[";
++    for (size_t i = 0; i < ttft.size(); ++i) {
++        js << (i ? "," : "") << ttft[i];
++    }
++    js << "],\"ttft_by_p\":{";
++    {
++        bool f1 = true;
++        for (auto & kv : ttft_p) {
++            js << (f1 ? "" : ",") << "\"" << kv.first << "\":{\"prefill\":[";
++            for (size_t i = 0; i < kv.second.size(); ++i) {
++                js << (i ? "," : "") << kv.second[i];
++            }
++            js << "],\"fill\":[";
++            const auto & cf = cfg_p[kv.first];
++            for (size_t i = 0; i < cf.size(); ++i) {
++                js << (i ? "," : "") << cf[i];
++            }
++            js << "]";
++            const std::pair<const char *, std::map<int, std::vector<double>> *> extra[] = {
++                { "pf_ms", &pfms_p }, { "pf_read_GB", &pfrd_p }, { "pf_d2d_GB", &pfdd_p }, { "pf_used", &pfus_p }, { "pf_pre", &pfpr_p }, { "pf_pre_hit", &pfph_p }, { "pf_ram_GB", &pfrm_p }, { "ram_frac", &rfr_p }, { "ram_on", &ron_p }, { "dec_ms", &dec_p } };
++            for (const auto & x : extra) {
++                const auto & v = (*x.second)[kv.first];
++                js << ",\"" << x.first << "\":[";
++                for (size_t i = 0; i < v.size(); ++i) {
++                    js << (i ? "," : "") << v[i];
++                }
++                js << "]";
++            }
++            js << "}";
++            f1 = false;
++        }
++    }
++    js << "},\"cold\":" << (cold ? 1 : 0) << ",\"prefill_opts\":\"" << prefill_opts << "\",\"runs\":{";
++    raw << "{";
++    bool first = true;
++    for (const auto & it : plan) {
++        const run_acc & a = acc[it.key];
++        const size_t n = a.ms.size();
++        double m = 0, nl = 0;
++        for (size_t i = 0; i < n; ++i) {
++            m += a.ms[i];
++            nl += a.nll[i];
++        }
++        m /= n;
++        nl /= n;
++        double agree = -1, dppl = 0;
++        if (ref && ref->ms.size() == n) {
++            int same = 0;
++            double rnl = 0;
++            for (size_t i = 0; i < n; ++i) {
++                same += a.am[i] == ref->am[i];
++                rnl += ref->nll[i];
++            }
++            agree = (double) same / n;
++            dppl = 100.0 * (std::exp(nl - rnl / n) - 1.0);
++        }
++        const double nt = std::max<int64_t>(1, a.st.n_tok);
++        js << (first ? "" : ",") << "\"" << it.key << "\":{\"ms_mean\":" << m << ",\"ms_p50\":" << pct(a.ms, 50)
++           << ",\"ms_p90\":" << pct(a.ms, 90) << ",\"tok_s\":" << 1000.0 / m << ",\"ppl\":" << std::exp(nl)
++           << ",\"dppl_pct\":" << dppl << ",\"agree\":" << agree;
++        if (it.mode != "stock") {
++            js << ",\"stall_ms\":" << a.st.stall_ms / nt << ",\"wait_pending_ms\":" << a.st.wait_pending_ms / nt
++               << ",\"cb_ms\":" << a.st.cb_ms / nt << ",\"hit\":" << (double) a.st.n_hit / std::max<int64_t>(1, a.st.n_want)
++               << ",\"subst\":" << (double) a.st.n_sub / std::max<int64_t>(1, a.st.n_want)
++               << ",\"urg_per_tok\":" << a.st.n_urg / nt << ",\"bg_per_tok\":" << a.st.n_bg / nt
++               << ",\"drop_per_tok\":" << a.st.n_drop / nt << ",\"cancel_per_tok\":" << a.st.n_cancel / nt
++               << ",\"steal_per_tok\":" << a.st.n_steal / nt << ",\"skip_per_tok\":" << a.st.n_skip / nt << ",\"MB_per_tok\":" << a.st.bytes / nt / 1e6
++               << ",\"cfg_ms\":" << a.cfg_ms / n_sess << ",\"mass\":" << a.st.mass / std::max<int64_t>(1, a.st.n_ltok);
++        }
++        // by quarter of the decode position
++        {
++            double qn[4] = {0, 0, 0, 0}, qnl[4] = {0, 0, 0, 0}, qrnl[4] = {0, 0, 0, 0}, qms[4] = {0, 0, 0, 0};
++            for (size_t i = 0; i < n; ++i) {
++                const int b = std::min(3, (int) ((i % D) * 4 / D));
++                qn[b] += 1;
++                qnl[b] += a.nll[i];
++                qms[b] += a.ms[i];
++                if (ref && ref->ms.size() == n) {
++                    qrnl[b] += ref->nll[i];
++                }
++            }
++            auto arr = [&](const char * name, auto f) {
++                js << ",\"" << name << "\":[";
++                for (int b = 0; b < 4; ++b) {
++                    js << (b ? "," : "") << f(b);
++                }
++                js << "]";
++            };
++            arr("q_ms", [&](int b) { return qn[b] > 0 ? qms[b] / qn[b] : 0.0; });
++            arr("q_ppl", [&](int b) { return qn[b] > 0 ? std::exp(qnl[b] / qn[b]) : 0.0; });
++            if (ref && ref->ms.size() == n) {
++                arr("q_dppl", [&](int b) { return qn[b] > 0 ? 100.0 * (std::exp((qnl[b] - qrnl[b]) / qn[b]) - 1.0) : 0.0; });
++            }
++            if (it.mode != "stock") {
++                arr("q_hit", [&](int b) { return a.q_want[b] > 0 ? a.q_hit[b] / a.q_want[b] : 0.0; });
++                arr("q_MB", [&](int b) { return qn[b] > 0 ? a.q_bytes[b] / qn[b] / 1e6 : 0.0; });
++            }
++        }
++        js << "}";
++        raw << (first ? "" : ",") << "\"" << it.key << "\":{\"nll\":[";
++        for (size_t i = 0; i < n; ++i) {
++            raw << (i ? "," : "") << a.nll[i];
++        }
++        raw << "],\"am\":[";
++        for (size_t i = 0; i < n; ++i) {
++            raw << (i ? "," : "") << a.am[i];
++        }
++        raw << "],\"ms\":[";
++        for (size_t i = 0; i < n; ++i) {
++            raw << (i ? "," : "") << a.ms[i];
++        }
++        raw << "]}";
++        first = false;
++    }
++    js << "}}";
++    raw << "}";
++    printf("SECTION_XC %s\n", js.str().c_str());
++    fflush(stdout);
++    if (!out_path.empty()) {
++        std::ofstream(out_path) << js.str() << "\n";
++        std::ofstream(out_path + ".raw.json") << raw.str() << "\n";
++    }
++
++    llama_free(ctx);
++    llama_model_free(model);
++    llama_backend_free();
++    return 0;
++}

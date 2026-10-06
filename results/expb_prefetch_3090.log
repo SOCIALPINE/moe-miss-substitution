@@ -1,0 +1,23 @@
+# Experiment B, stage 1 (run_expb_prefetch.sh, md5 d48dedfa3d2884cb46be2015263a84ce). These lines were recovered by a script
+# from the work-session record of the pod log (the stage-1 log was not saved to a file at the time); no other lines are kept.
+# The prep lines and the download lines ([dl] = size of the model folder, du) were added in a second recovery pass.
+=== PREFETCH START Mon Oct  5 06:27:44 UTC 2026 ===
+MODEL_REV 9c7f2fbe84465e40164a94cc16cd30b6999b0cc7
+DATA_REV wikimedia/wikipedia b04c8d1ceb2f5cd4588862100d08de323dccfbaa
+DATA_REV codeparrot/codeparrot-clean-valid 4db92d2ec0c1b4c41eeb439cfae16854511d9dcd
+DATA_REV HuggingFaceH4/ultrachat_200k 8049631c405ae6576f93f445c6b8166f76f5505a
+DATA_REV maywell/koVast b0704da17669a3f32b5f11bb11c5b27620d27677
+DATA_REV AI-MO/NuminaMath-CoT 9d8d210c9f6a36c8f3cd84045668c9b7800ef517
+[06:28:09]   ko_wiki: 32 single-document sessions + 0 packed
+[06:28:12]   en_wiki: 32 single-document sessions + 0 packed
+[06:28:15]   python_code: 32 single-document sessions + 0 packed
+[06:28:19]   chat_en: 32 single-document sessions + 0 packed
+[06:28:24]   chat_ko: 17 single-document sessions + 1 packed
+[06:28:27]   math_chat: 32 packed sessions
+[dl 06:29:00] 45G
+[dl 06:30:00] 86G
+[dl 06:31:00] 127G
+MODEL DOWNLOAD END 223s
+[dl 06:32:00] 152G
+SESSIONS (178, 2048) ['ko_wiki', 'en_wiki', 'python_code', 'chat_en', 'chat_ko', 'math_chat'] [32, 32, 32, 32, 18, 32] 5190562771148a2112c701aac2e9cdd8
+=== PREFETCH DONE Mon Oct  5 06:31:43 UTC 2026 ===

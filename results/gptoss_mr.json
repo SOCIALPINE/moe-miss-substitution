@@ -1,0 +1,14 @@
+{"model": "gpt-oss-120b", "E": 128, "K": 4, "layers": 36, "expert_mb": 13.2192, "active_params": 5.13e9,
+ "base": {"ppl_all": 511.83, "ppl_python": 2.2603, "top1": 0.28514, "top1_python": 0.79601},
+ "streams": {
+  "0.25:lru:B":      {"src": "run1", "dppl_all": 276.06, "kl": 1.12981, "agree": 0.5491, "top1": 0.20896, "dppl_python": 9.723, "hit": 0.8483, "subst": 0.1517, "stall_mb": 0.0, "bg_mb": 288.69},
+  "0.125:lru:B":     {"src": "run1", "dppl_all": 355.23, "kl": 1.58468, "agree": 0.45187, "top1": 0.18025, "dppl_python": 58.329, "hit": 0.6866, "subst": 0.3134, "stall_mb": 0.0, "bg_mb": 596.5},
+  "0.125:lru:C":     {"src": "run1", "dppl_all": 16.653, "kl": 0.17635, "agree": 0.81676, "top1": 0.27512, "dppl_python": 0.037, "hit": 0.6671, "subst": 0.0273, "stall_mb": 581.82, "bg_mb": 51.9},
+  "0.25:lru:C":      {"dppl_all": 8.488, "kl": 0.15826, "agree": 0.82569, "top1": 0.27809, "dppl_python": -0.03, "kl_python": 0.00307, "agree_python": 0.98461, "kl_en_wiki": 0.05359, "agree_en_wiki": 0.85945, "hit": 0.8437, "subst": 0.0165, "stall_mb": 266.26, "bg_mb": 31.33},
+  "0.25:lru:C@0.3":  {"dppl_all": 86.242, "kl": 0.52272, "agree": 0.68346, "top1": 0.24522, "dppl_python": 1.14, "kl_python": 0.01398, "agree_python": 0.9658, "kl_en_wiki": 0.18221, "agree_en_wiki": 0.72883, "hit": 0.8472, "subst": 0.1238, "stall_mb": 55.34, "bg_mb": 235.59},
+  "0.25:lru:C@1.0":  {"dppl_all": 88.321, "kl": 0.51946, "agree": 0.68529, "top1": 0.24473, "dppl_python": 1.186, "kl_python": 0.01523, "agree_python": 0.96498, "kl_en_wiki": 0.19841, "agree_en_wiki": 0.71979, "hit": 0.8472, "subst": 0.1261, "stall_mb": 50.84, "bg_mb": 240.05},
+  "0.5:lru:B":       {"dppl_all": 58.3, "kl": 0.44037, "agree": 0.7161, "top1": 0.2514, "dppl_python": 1.7, "kl_python": 0.01849, "agree_python": 0.96368, "kl_en_wiki": 0.25673, "agree_en_wiki": 0.72223, "hit": 0.9639, "subst": 0.0361, "stall_mb": 0.0, "bg_mb": 68.79},
+  "0.5:lru:C":       {"dppl_all": 2.522, "kl": 0.12114, "agree": 0.84533, "top1": 0.2826, "dppl_python": 0.08, "kl_python": 0.00232, "agree_python": 0.98713, "kl_en_wiki": 0.04217, "agree_en_wiki": 0.88331, "hit": 0.9633, "subst": 0.0057, "stall_mb": 58.91, "bg_mb": 10.92},
+  "0.5:lru:C@1.0":   {"dppl_all": 16.873, "kl": 0.2167, "agree": 0.7932, "top1": 0.27058, "dppl_python": 0.458, "kl_python": 0.00648, "agree_python": 0.97671, "kl_en_wiki": 0.09851, "agree_en_wiki": 0.81099, "hit": 0.9637, "subst": 0.0309, "stall_mb": 10.28, "bg_mb": 58.84},
+  "0.125:lru:C@1.0": {"dppl_all": 129.987, "kl": 0.80616, "agree": 0.612, "top1": 0.23561, "dppl_python": 2.758, "kl_python": 0.02912, "agree_python": 0.95033, "kl_en_wiki": 0.2892, "agree_en_wiki": 0.64707, "hit": 0.6764, "subst": 0.2609, "stall_mb": 119.35, "bg_mb": 496.71}
+ }}

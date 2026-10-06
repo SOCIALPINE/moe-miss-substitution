@@ -1,0 +1,685 @@
+{
+ "fences": {
+  "records": 984,
+  "closed_blocks=1": 966,
+  "closed_blocks=0": 16,
+  "has_unclosed_block": 11,
+  "orig_regex_no_block": 16,
+  "closed_blocks=3+": 1,
+  "closed_blocks=2": 1
+ },
+ "program_diff": {},
+ "defect_pattern": [],
+ "fails": [
+  {
+   "lab": "Q",
+   "i": 532,
+   "task_id": "HumanEval/32",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: '(' was never closed"
+  },
+  {
+   "lab": "C",
+   "i": 532,
+   "task_id": "HumanEval/32",
+   "eog": 1,
+   "n": 637,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 532,
+   "task_id": "HumanEval/32",
+   "eog": 1,
+   "n": 610,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 562,
+   "task_id": "HumanEval/62",
+   "eog": 1,
+   "n": 141,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "E",
+   "i": 565,
+   "task_id": "HumanEval/65",
+   "eog": 1,
+   "n": 160,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 565,
+   "task_id": "HumanEval/65",
+   "eog": 1,
+   "n": 164,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 565,
+   "task_id": "HumanEval/65",
+   "eog": 1,
+   "n": 164,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "T",
+   "i": 565,
+   "task_id": "HumanEval/65",
+   "eog": 1,
+   "n": 154,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "C",
+   "i": 565,
+   "task_id": "HumanEval/65",
+   "eog": 1,
+   "n": 164,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 565,
+   "task_id": "HumanEval/65",
+   "eog": 1,
+   "n": 158,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 571,
+   "task_id": "HumanEval/71",
+   "eog": 1,
+   "n": 279,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError: This prints if this assert fails 1 (good for debugging!)"
+  },
+  {
+   "lab": "C",
+   "i": 589,
+   "task_id": "HumanEval/89",
+   "eog": 1,
+   "n": 508,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: '(' was never closed"
+  },
+  {
+   "lab": "H",
+   "i": 593,
+   "task_id": "HumanEval/93",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: invalid syntax"
+  },
+  {
+   "lab": "H",
+   "i": 608,
+   "task_id": "HumanEval/108",
+   "eog": 1,
+   "n": 240,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "E",
+   "i": 616,
+   "task_id": "HumanEval/116",
+   "eog": 0,
+   "n": 1024,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 616,
+   "task_id": "HumanEval/116",
+   "eog": 0,
+   "n": 1024,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 616,
+   "task_id": "HumanEval/116",
+   "eog": 1,
+   "n": 428,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "C",
+   "i": 616,
+   "task_id": "HumanEval/116",
+   "eog": 1,
+   "n": 332,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 620,
+   "task_id": "HumanEval/120",
+   "eog": 1,
+   "n": 274,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "E",
+   "i": 625,
+   "task_id": "HumanEval/125",
+   "eog": 1,
+   "n": 210,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 625,
+   "task_id": "HumanEval/125",
+   "eog": 1,
+   "n": 210,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 625,
+   "task_id": "HumanEval/125",
+   "eog": 1,
+   "n": 210,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "T",
+   "i": 625,
+   "task_id": "HumanEval/125",
+   "eog": 1,
+   "n": 210,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "E",
+   "i": 627,
+   "task_id": "HumanEval/127",
+   "eog": 1,
+   "n": 452,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 627,
+   "task_id": "HumanEval/127",
+   "eog": 1,
+   "n": 458,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 627,
+   "task_id": "HumanEval/127",
+   "eog": 1,
+   "n": 464,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "T",
+   "i": 627,
+   "task_id": "HumanEval/127",
+   "eog": 1,
+   "n": 462,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "C",
+   "i": 627,
+   "task_id": "HumanEval/127",
+   "eog": 1,
+   "n": 458,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 627,
+   "task_id": "HumanEval/127",
+   "eog": 1,
+   "n": 463,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "E",
+   "i": 629,
+   "task_id": "HumanEval/129",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: unterminated triple-quoted string literal (detected at line 56)"
+  },
+  {
+   "lab": "Q",
+   "i": 629,
+   "task_id": "HumanEval/129",
+   "eog": 0,
+   "n": 1024,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 629,
+   "task_id": "HumanEval/129",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: invalid syntax"
+  },
+  {
+   "lab": "T",
+   "i": 629,
+   "task_id": "HumanEval/129",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: unterminated triple-quoted string literal (detected at line 54)"
+  },
+  {
+   "lab": "C",
+   "i": 629,
+   "task_id": "HumanEval/129",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: unterminated string literal (detected at line 48)"
+  },
+  {
+   "lab": "H",
+   "i": 629,
+   "task_id": "HumanEval/129",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: invalid character '\u00d7' (U+00D7)"
+  },
+  {
+   "lab": "E",
+   "i": 630,
+   "task_id": "HumanEval/130",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: unterminated string literal (detected at line 26)"
+  },
+  {
+   "lab": "Q",
+   "i": 630,
+   "task_id": "HumanEval/130",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: unterminated string literal (detected at line 43)"
+  },
+  {
+   "lab": "S",
+   "i": 630,
+   "task_id": "HumanEval/130",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: unterminated string literal (detected at line 20)"
+  },
+  {
+   "lab": "T",
+   "i": 630,
+   "task_id": "HumanEval/130",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: invalid syntax"
+  },
+  {
+   "lab": "C",
+   "i": 630,
+   "task_id": "HumanEval/130",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: unterminated string literal (detected at line 49)"
+  },
+  {
+   "lab": "H",
+   "i": 630,
+   "task_id": "HumanEval/130",
+   "eog": 0,
+   "n": 1024,
+   "kind": "SyntaxError",
+   "where": "model code",
+   "last": "SyntaxError: unterminated string literal (detected at line 31)"
+  },
+  {
+   "lab": "E",
+   "i": 632,
+   "task_id": "HumanEval/132",
+   "eog": 1,
+   "n": 681,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 632,
+   "task_id": "HumanEval/132",
+   "eog": 1,
+   "n": 253,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 632,
+   "task_id": "HumanEval/132",
+   "eog": 1,
+   "n": 219,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "T",
+   "i": 632,
+   "task_id": "HumanEval/132",
+   "eog": 1,
+   "n": 197,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "C",
+   "i": 632,
+   "task_id": "HumanEval/132",
+   "eog": 1,
+   "n": 217,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 632,
+   "task_id": "HumanEval/132",
+   "eog": 1,
+   "n": 271,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "E",
+   "i": 634,
+   "task_id": "HumanEval/134",
+   "eog": 1,
+   "n": 274,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 634,
+   "task_id": "HumanEval/134",
+   "eog": 1,
+   "n": 284,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 634,
+   "task_id": "HumanEval/134",
+   "eog": 1,
+   "n": 275,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "T",
+   "i": 634,
+   "task_id": "HumanEval/134",
+   "eog": 1,
+   "n": 297,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "C",
+   "i": 634,
+   "task_id": "HumanEval/134",
+   "eog": 1,
+   "n": 299,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 634,
+   "task_id": "HumanEval/134",
+   "eog": 1,
+   "n": 308,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 640,
+   "task_id": "HumanEval/140",
+   "eog": 1,
+   "n": 166,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError: This prints if this assert fails 3 (good for debugging!)"
+  },
+  {
+   "lab": "H",
+   "i": 640,
+   "task_id": "HumanEval/140",
+   "eog": 1,
+   "n": 164,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError: This prints if this assert fails 3 (good for debugging!)"
+  },
+  {
+   "lab": "E",
+   "i": 645,
+   "task_id": "HumanEval/145",
+   "eog": 1,
+   "n": 246,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 645,
+   "task_id": "HumanEval/145",
+   "eog": 1,
+   "n": 251,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 645,
+   "task_id": "HumanEval/145",
+   "eog": 1,
+   "n": 256,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "T",
+   "i": 645,
+   "task_id": "HumanEval/145",
+   "eog": 1,
+   "n": 250,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "C",
+   "i": 645,
+   "task_id": "HumanEval/145",
+   "eog": 1,
+   "n": 250,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 645,
+   "task_id": "HumanEval/145",
+   "eog": 1,
+   "n": 259,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "E",
+   "i": 660,
+   "task_id": "HumanEval/160",
+   "eog": 1,
+   "n": 296,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "Q",
+   "i": 660,
+   "task_id": "HumanEval/160",
+   "eog": 1,
+   "n": 311,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "S",
+   "i": 660,
+   "task_id": "HumanEval/160",
+   "eog": 1,
+   "n": 311,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "T",
+   "i": 660,
+   "task_id": "HumanEval/160",
+   "eog": 1,
+   "n": 363,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "C",
+   "i": 660,
+   "task_id": "HumanEval/160",
+   "eog": 1,
+   "n": 311,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  },
+  {
+   "lab": "H",
+   "i": 660,
+   "task_id": "HumanEval/160",
+   "eog": 1,
+   "n": 296,
+   "kind": "AssertionError",
+   "where": "official test",
+   "last": "AssertionError"
+  }
+ ]
+}

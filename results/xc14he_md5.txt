@@ -1,0 +1,8 @@
+415901477d9ea8811e6968e1b3b00aa7  xc14he_a40.log
+9a66b5fb74e638efd7209e2a867624b7  xc14he_texts.json
+4c7ecfe1d2065a66cadedda83eb4cd81  xc14he_tokens.json
+889d8ca1ce919732c8134cae2a363575  xc14he_verify.out
+8116e3f9c02610721f2f8f53496242c3  xc14he_local_ok.json
+c2c921c221613889eb2faebc2bcf199a  xc14he_explore.out
+b9c6e4838ac999c8f16d02f8894de7ac  xc14he_explore.json
+72f084d939e4b11957d4d79022bf83f4  xc14_pooled_i14.json

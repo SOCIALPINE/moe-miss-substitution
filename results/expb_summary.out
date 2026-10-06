@@ -1,0 +1,22 @@
+# Experiment B summary, from the EXPB_RESULT lines of results/expb_local_analysis.out (primary) and results/expb_aux_local_analysis.out (exploratory)
+base ppl 3.137 3.137 scored 73680 73680
+primary H0.1f: dppl +0.429 [+0.112, +0.768] kl 0.01165 [0.00937, 0.01409] agree 0.9685 [0.9634, 0.9735] acc1 0.7396 feasible 0.9958 defined 0.3338 mass_all 0.0352 mass_def 0.1054 sq_def 0.00885 conc 0.798 nsub 1.44 rank 5.96 gap 0.00056
+   by domain: ko_wiki +1.05 en_wiki +0.98 python_code +0.74 chat_en -0.36 chat_ko +0.95 math_chat -0.77
+primary L0.1f: dppl +0.014 [-0.105, +0.134] kl 0.00638 [0.00513, 0.00769] agree 0.9760 [0.9723, 0.9798] acc1 0.7409 feasible 0.9959 defined 0.3337 mass_all 0.0352 mass_def 0.1054 sq_def 0.00545 conc 0.484 nsub 2.16 rank 8.10 gap 0.00056
+   by domain: ko_wiki +0.10 en_wiki -0.05 python_code +0.19 chat_en -0.17 chat_ko +0.20 math_chat -0.18
+primary pair m*=0.1 fill: R 30.419 [-86.951, 100.941] R_m 30.422 [-86.960, 100.952] H-L +0.415 [+0.128, +0.702] KLratio 1.826 [1.726, 1.927] mass H-L -0.000004 | no judgment: the interval of the light arm's Delta ppl includes 0
+aux H0.05f: dppl +0.006 [-0.048, +0.061] kl 0.00134 [0.00115, 0.00153] agree 0.9886 [0.9869, 0.9903] acc1 0.7407 feasible 0.6377 defined 0.0087 mass_all 0.0005 mass_def 0.0520 sq_def 0.00215 conc 0.789 nsub 1.49 rank 6.20 gap 0.00028
+   by domain: ko_wiki +0.16 en_wiki -0.09 python_code +0.00 chat_en +0.04 chat_ko +0.00 math_chat -0.08
+aux H0.15f: dppl +4.355 [+2.756, +6.095] kl 0.05616 [0.04578, 0.06667] agree 0.9277 [0.9157, 0.9400] acc1 0.7326 feasible 0.9974 defined 0.9457 mass_all 0.1451 mass_def 0.1534 sq_def 0.01795 conc 0.776 nsub 1.50 rank 4.97 gap 0.00077
+   by domain: ko_wiki +8.29 en_wiki +6.64 python_code +5.08 chat_en +1.50 chat_ko +7.59 math_chat -2.53
+aux H0.1r: dppl +0.362 [+0.113, +0.596] kl 0.01304 [0.01025, 0.01602] agree 0.9658 [0.9603, 0.9716] acc1 0.7397 feasible 0.9959 defined 0.3314 mass_all 0.0349 mass_def 0.1054 sq_def 0.00887 conc 0.798 nsub 1.44 rank 5.96 gap 0.00056
+   by domain: ko_wiki +0.82 en_wiki +0.44 python_code +0.62 chat_en +0.14 chat_ko +0.75 math_chat -0.58
+aux L0.05f: dppl -0.061 [-0.111, -0.015] kl 0.00125 [0.00108, 0.00143] agree 0.9885 [0.9867, 0.9902] acc1 0.7407 feasible 0.6378 defined 0.0088 mass_all 0.0005 mass_def 0.0521 sq_def 0.00129 conc 0.468 nsub 2.31 rank 8.14 gap 0.00028
+   by domain: ko_wiki +0.01 en_wiki -0.11 python_code -0.10 chat_en -0.06 chat_ko -0.03 math_chat -0.08
+aux L0.15f: dppl +0.494 [+0.189, +0.802] kl 0.01857 [0.01527, 0.02187] agree 0.9572 [0.9504, 0.9642] acc1 0.7399 feasible 0.9973 defined 0.9447 mass_all 0.1450 mass_def 0.1535 sq_def 0.01064 conc 0.448 nsub 2.40 rank 7.43 gap 0.00077
+   by domain: ko_wiki +1.23 en_wiki +0.85 python_code +0.79 chat_en -0.02 chat_ko +0.92 math_chat -0.80
+aux L0.1r: dppl -0.029 [-0.295, +0.201] kl 0.00907 [0.00714, 0.01121] agree 0.9726 [0.9681, 0.9773] acc1 0.7413 feasible 0.9958 defined 0.3301 mass_all 0.0348 mass_def 0.1055 sq_def 0.00545 conc 0.485 nsub 2.15 rank 8.11 gap 0.00056
+   by domain: ko_wiki -0.04 en_wiki -0.74 python_code -0.16 chat_en +0.17 chat_ko +0.34 math_chat +0.26
+aux pair m*=0.05 fill: R -0.094 [-2.068, 0.862] R_m -0.095 [-2.088, 0.870] H-L +0.067 [+0.007, +0.130] KLratio 1.067 [1.030, 1.106] mass H-L -0.000004 | direction only: light more harmful (the interval of R excludes 1); size not judged
+aux pair m*=0.1 renorm: R -12.441 [-41.592, 38.434] R_m -12.398 [-41.447, 38.300] H-L +0.391 [+0.021, +0.778] KLratio 1.437 [1.354, 1.521] mass H-L +0.000122 | no judgment: the interval of the light arm's Delta ppl includes 0
+aux pair m*=0.15 fill: R 8.824 [5.991, 16.937] R_m 8.818 [5.987, 16.927] H-L +3.861 [+2.436, +5.404] KLratio 3.024 [2.876, 3.186] mass H-L +0.000088 | at equal mass, the heavy substitution is more harmful: lower bound of R > 1.25

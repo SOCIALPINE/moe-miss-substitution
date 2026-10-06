@@ -1,0 +1,28 @@
+FENCES {"closed_blocks=0": 16, "closed_blocks=1": 966, "closed_blocks=2": 1, "closed_blocks=3+": 1, "has_unclosed_block": 11, "orig_regex_no_block": 16, "records": 984}
+PROGRAM_DIFF vs orig {}
+DEFECT_PATTERN []
+FAILS E {"AssertionError": 7, "fail": 10, "truncated": 3}
+FAILS Q {"truncated": 4, "fail": 12, "AssertionError": 8}
+FAILS S {"AssertionError": 9, "fail": 11, "truncated": 2}
+FAILS T {"AssertionError": 7, "fail": 9, "truncated": 2}
+FAILS C {"AssertionError": 8, "fail": 11, "SyntaxError": 1, "truncated": 2}
+FAILS H {"AssertionError": 11, "fail": 14, "truncated": 3}
+FAIL_PROBLEMS 18
+FP 532 HumanEval/32 .Q..CH {"Q": "T:SyntaxError@model code", "C": "AssertionError@official test", "H": "AssertionError@official test"}
+FP 562 HumanEval/62 .....H {"H": "AssertionError@official test"}
+FP 565 HumanEval/65 EQSTCH {"E": "AssertionError@official test", "Q": "AssertionError@official test", "S": "AssertionError@official test", "T": "AssertionError@official test", "C": "AssertionError@official test", "H": "AssertionError@official test"}
+FP 571 HumanEval/71 .....H {"H": "AssertionError@official test"}
+FP 589 HumanEval/89 ....C. {"C": "SyntaxError@model code"}
+FP 593 HumanEval/93 .....H {"H": "T:SyntaxError@model code"}
+FP 608 HumanEval/108 .....H {"H": "AssertionError@official test"}
+FP 616 HumanEval/116 EQS.C. {"E": "T:AssertionError@official test", "Q": "T:AssertionError@official test", "S": "AssertionError@official test", "C": "AssertionError@official test"}
+FP 620 HumanEval/120 .Q.... {"Q": "AssertionError@official test"}
+FP 625 HumanEval/125 EQST.. {"E": "AssertionError@official test", "Q": "AssertionError@official test", "S": "AssertionError@official test", "T": "AssertionError@official test"}
+FP 627 HumanEval/127 EQSTCH {"E": "AssertionError@official test", "Q": "AssertionError@official test", "S": "AssertionError@official test", "T": "AssertionError@official test", "C": "AssertionError@official test", "H": "AssertionError@official test"}
+FP 629 HumanEval/129 EQSTCH {"E": "T:SyntaxError@model code", "Q": "T:AssertionError@official test", "S": "T:SyntaxError@model code", "T": "T:SyntaxError@model code", "C": "T:SyntaxError@model code", "H": "T:SyntaxError@model code"}
+FP 630 HumanEval/130 EQSTCH {"E": "T:SyntaxError@model code", "Q": "T:SyntaxError@model code", "S": "T:SyntaxError@model code", "T": "T:SyntaxError@model code", "C": "T:SyntaxError@model code", "H": "T:SyntaxError@model code"}
+FP 632 HumanEval/132 EQSTCH {"E": "AssertionError@official test", "Q": "AssertionError@official test", "S": "AssertionError@official test", "T": "AssertionError@official test", "C": "AssertionError@official test", "H": "AssertionError@official test"}
+FP 634 HumanEval/134 EQSTCH {"E": "AssertionError@official test", "Q": "AssertionError@official test", "S": "AssertionError@official test", "T": "AssertionError@official test", "C": "AssertionError@official test", "H": "AssertionError@official test"}
+FP 640 HumanEval/140 ..S..H {"S": "AssertionError@official test", "H": "AssertionError@official test"}
+FP 645 HumanEval/145 EQSTCH {"E": "AssertionError@official test", "Q": "AssertionError@official test", "S": "AssertionError@official test", "T": "AssertionError@official test", "C": "AssertionError@official test", "H": "AssertionError@official test"}
+FP 660 HumanEval/160 EQSTCH {"E": "AssertionError@official test", "Q": "AssertionError@official test", "S": "AssertionError@official test", "T": "AssertionError@official test", "C": "AssertionError@official test", "H": "AssertionError@official test"}

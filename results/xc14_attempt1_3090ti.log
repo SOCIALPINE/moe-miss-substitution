@@ -1,0 +1,48 @@
+# round 14 attempt 1 — failed before any generation (no outcome data produced)
+# pod <id> (xcache-r14), host <id>, RTX 3090 Ti community $0.27/h
+# created 2026-10-03T06:56:45Z, deleted 2026-10-03T07:28Z (~32 min, ~$0.14)
+# cause: github.com DNS resolution failed intermittently on this host
+#        (NET check at 06:57 got 200 from github.com, git fetch at 07:07 "Could not resolve host")
+# container log (verbatim, timestamps UTC):
+06:56:54 chunk P_TAR_0 10000 208e80ef
+06:56:54 chunk P_TAR_1 10000 7ef2d323
+06:56:54 chunk P_TAR_2 10000 1cf9c20f
+06:56:54 chunk P_TAR_3 10000 74c81d6e
+06:56:54 chunk P_TAR_4 7400 ae376c0c
+06:56:54 tar 153600 b5756ba1d173e943a0cadf39b1a2a5cc
+06:56:54 payload run.sh 310204d152fc0e74f4d5175d1406bba1
+06:56:54 payload prep_tasks.py 7978166c07c3d7b7ded93610142d0829
+06:56:54 payload score_tasks.py 013945132d7f88dd05b44a1627087267
+06:56:54 payload xcache.patch 48c17a90a44cca01047e5a2a5db32185
+06:56:54 payload PREREG_xc14.md a76afa5e1f63db8e4c84da4461d4a06c
+06:56:56 CUDA OK NVIDIA GeForce RTX 3090 Ti
+06:57:04 NET https://github.com 200 7.180908s
+06:57:05 NET https://codeload.github.com 301 1.668370s
+06:57:05 NET https://pypi.org 200 0.071348s
+06:57:06 NET https://files.pythonhosted.org 404 0.120901s
+06:57:06 NET https://huggingface.co 200 0.127515s
+06:57:06 run.sh timeouts now kill after 10 s: 14d841ba82a7bacd85053b7c7ce2da0e
+06:57:06 === XC JOB START Sat Oct  3 06:57:06 UTC 2026 ===
+06:57:06 NVIDIA GeForce RTX 3090 Ti, 24564 MiB, 575.51.03
+06:57:06 cpus=128
+06:57:06 Mem:             220          22          65           0         134         197
+06:57:06 /dev/nvme0n1p3   20G  9.9M   20G   1% /workspace
+06:57:06 overlay         100G   16M  100G   1% /
+06:57:06 memory.max  v1 53999996928
+06:57:06 nvme0n1  1.8T WD_BLACK SN850X 2000GB
+06:57:06 Cuda compilation tools, release 12.8, V12.8.93
+07:04:35 PIP DONE 07:04:35
+07:04:44 TOKENIZER DONE 07:04:44
+07:04:52 TASKS gsm8k n=500 prompt tokens min 46 mean 83 max 180
+07:04:52 TASKS humaneval n=164 prompt tokens min 74 mean 170 max 427
+07:04:52 TASKS first gsm ids [288, 725, 818, 786, 320] first prompt tail ' your final answer within \\boxed{}.<|im_end|>\n<|im_start|>assistant\n'
+07:04:52 tasks.bin md5 710662171e180a70a7a195478addc5cd
+07:04:52 DATA DONE 07:04:52
+07:07:23 fetch retry 1 07:07:23
+07:07:32 fatal: unable to access 'https://github.com/ggml-org/llama.cpp/': Could not resolve host: github.com
+07:07:32 fetch retry 2 07:07:32
+07:10:07 fetch retry 3 07:10:07
+07:15:12 tarball retry 1 07:15:12
+07:20:17 tarball retry 2 07:20:17
+07:25:22 tarball retry 3 07:25:22
+07:25:27 PATCH FAILED

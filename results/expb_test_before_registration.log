@@ -1,0 +1,59 @@
+# test_expb.py output, run locally on 2026-10-05 at about 06:26 UTC, before registration. expb.py at that time differed from the
+# registered file (e572d2a7...) only in the default value and help text of --arms (changed at 06:29 UTC); the runs pass --arms explicitly.
+1. pick_pair vs enumeration: 0 mismatches in 1800 (defined 1165)
+2. arm_route fill/renorm: ok
+The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+sible 0.2954 mass_all 0.0271 sq_all 0.0021 mass_defined 0.0931 sq_defined 0.0071 conc_defined 0.7776 gap_defined 0.0007 nsub_defined 2.4066 rank_mean 4.8704
+[15:26:38] L0.1f: ppl 1123.0119 dppl -0.153% kl 0.00117 agree 0.8424 defined 0.2835 feasible 0.2887 mass_all 0.0265 sq_all 0.0017 mass_defined 0.0935 sq_defined 0.0061 conc_defined 0.6617 gap_defined 0.0007 nsub_defined 5.0184 rank_mean 6.3980
+[15:26:38] H0.05f: ppl 1125.5200 dppl +0.070% kl 0.00042 agree 0.8879 defined 0.3103 feasible 0.3199 mass_all 0.0145 sq_all 0.0006 mass_defined 0.0467 sq_defined 0.0018 conc_defined 0.7791 gap_defined 0.0004 nsub_defined 2.3333 rank_mean 5.3022
+[15:26:38] L0.05f: ppl 1126.7247 dppl +0.177% kl 0.00044 agree 0.8848 defined 0.3140 feasible 0.3222 mass_all 0.0148 sq_all 0.0005 mass_defined 0.0471 sq_defined 0.0016 conc_defined 0.6754 gap_defined 0.0004 nsub_defined 4.5261 rank_mean 6.5471
+[15:26:38] H0.15f: ppl 1130.6298 dppl +0.524% kl 0.00284 agree 0.8303 defined 0.2805 feasible 0.2827 mass_all 0.0394 sq_all 0.0046 mass_defined 0.1406 sq_defined 0.0165 conc_defined 0.7965 gap_defined 0.0011 nsub_defined 2.4164 rank_mean 4.8716
+[15:26:38] L0.15f: ppl 1130.1739 dppl +0.484% kl 0.00273 agree 0.8091 defined 0.2917 feasible 0.2924 mass_all 0.0415 sq_all 0.0043 mass_defined 0.1421 sq_defined 0.0146 conc_defined 0.6886 gap_defined 0.0011 nsub_defined 5.2628 rank_mean 6.2865
+[15:26:38] H0.1r: ppl 1125.4444 dppl +0.063% kl 0.00112 agree 0.8515 defined 0.2909 feasible 0.2946 mass_all 0.0271 sq_all 0.0021 mass_defined 0.0930 sq_defined 0.0071 conc_defined 0.7779 gap_defined 0.0007 nsub_defined 2.4118 rank_mean 4.8918
+[15:26:38] L0.1r: ppl 1123.1811 dppl -0.138% kl 0.00117 agree 0.8424 defined 0.2820 feasible 0.2865 mass_all 0.0264 sq_all 0.0017 mass_defined 0.0936 sq_defined 0.0062 conc_defined 0.6675 gap_defined 0.0007 nsub_defined 4.9947 rank_mean 6.3930
+[15:26:38] H9f: ppl 1124.7348 dppl +0.000% kl 0.00000 agree 1.0000 defined 0.0000 feasible 0.0000 mass_all 0.0000 sq_all 0.0000 mass_defined 0.0000 sq_defined 0.0000 conc_defined 0.0000 gap_defined 0.0000 nsub_defined 0.0000 rank_mean 0.0000
+[15:26:38] L9r: ppl 1124.7348 dppl +0.000% kl 0.00000 agree 1.0000 defined 0.0000 feasible 0.0000 mass_all 0.0000 sq_all 0.0000 mass_defined 0.0000 sq_defined 0.0000 conc_defined 0.0000 gap_defined 0.0000 nsub_defined 0.0000 rank_mean 0.0000
+DXB END n=2 bytes=3624 md5=bba6c6b958687240fc39bef6a0cf991a raw=a33b0d12c78cf60112c3d765ee55045a rawbytes=12302
+[15:26:38] experiment B done in 11s The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+
+sible 0.2954 mass_all 0.0271 sq_all 0.0021 mass_defined 0.0931 sq_defined 0.0071 conc_defined 0.7776 gap_defined 0.0007 nsub_defined 2.4066 rank_mean 4.8704
+[15:26:55] L0.1f: ppl 1123.0119 dppl -0.153% kl 0.00117 agree 0.8424 defined 0.2835 feasible 0.2887 mass_all 0.0265 sq_all 0.0017 mass_defined 0.0935 sq_defined 0.0061 conc_defined 0.6617 gap_defined 0.0007 nsub_defined 5.0184 rank_mean 6.3980
+[15:26:55] H0.05f: ppl 1125.5200 dppl +0.070% kl 0.00042 agree 0.8879 defined 0.3103 feasible 0.3199 mass_all 0.0145 sq_all 0.0006 mass_defined 0.0467 sq_defined 0.0018 conc_defined 0.7791 gap_defined 0.0004 nsub_defined 2.3333 rank_mean 5.3022
+[15:26:55] L0.05f: ppl 1126.7247 dppl +0.177% kl 0.00044 agree 0.8848 defined 0.3140 feasible 0.3222 mass_all 0.0148 sq_all 0.0005 mass_defined 0.0471 sq_defined 0.0016 conc_defined 0.6754 gap_defined 0.0004 nsub_defined 4.5261 rank_mean 6.5471
+[15:26:55] H0.15f: ppl 1130.6298 dppl +0.524% kl 0.00284 agree 0.8303 defined 0.2805 feasible 0.2827 mass_all 0.0394 sq_all 0.0046 mass_defined 0.1406 sq_defined 0.0165 conc_defined 0.7965 gap_defined 0.0011 nsub_defined 2.4164 rank_mean 4.8716
+[15:26:55] L0.15f: ppl 1130.1739 dppl +0.484% kl 0.00273 agree 0.8091 defined 0.2917 feasible 0.2924 mass_all 0.0415 sq_all 0.0043 mass_defined 0.1421 sq_defined 0.0146 conc_defined 0.6886 gap_defined 0.0011 nsub_defined 5.2628 rank_mean 6.2865
+[15:26:55] H0.1r: ppl 1125.4444 dppl +0.063% kl 0.00112 agree 0.8515 defined 0.2909 feasible 0.2946 mass_all 0.0271 sq_all 0.0021 mass_defined 0.0930 sq_defined 0.0071 conc_defined 0.7779 gap_defined 0.0007 nsub_defined 2.4118 rank_mean 4.8918
+[15:26:55] L0.1r: ppl 1123.1811 dppl -0.138% kl 0.00117 agree 0.8424 defined 0.2820 feasible 0.2865 mass_all 0.0264 sq_all 0.0017 mass_defined 0.0936 sq_defined 0.0062 conc_defined 0.6675 gap_defined 0.0007 nsub_defined 4.9947 rank_mean 6.3930
+[15:26:55] H9f: ppl 1124.7348 dppl +0.000% kl 0.00000 agree 1.0000 defined 0.0000 feasible 0.0000 mass_all 0.0000 sq_all 0.0000 mass_defined 0.0000 sq_defined 0.0000 conc_defined 0.0000 gap_defined 0.0000 nsub_defined 0.0000 rank_mean 0.0000
+[15:26:55] L9r: ppl 1124.7348 dppl +0.000% kl 0.00000 agree 1.0000 defined 0.0000 feasible 0.0000 mass_all 0.0000 sq_all 0.0000 mass_defined 0.0000 sq_defined 0.0000 conc_defined 0.0000 gap_defined 0.0000 nsub_defined 0.0000 rank_mean 0.0000
+DXB END n=2 bytes=3620 md5=70e238595eb6f4f1b2b2a0d4f8751a66 raw=5cc0828640490c822c20705b6add646a rawbytes=12302
+[15:26:55] experiment B done in 11s The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+
+H0.1f {'defined': 0.2909, 'feasible': 0.2954, 'mass_all': 0.0271, 'sq_all': 0.0021, 'mass_defined': 0.0931, 'sq_defined': 0.0071, 'conc_defined': 0.7776, 'gap_defined': 0.0007, 'nsub_defined': 2.4066, 'rank_mean': 4.8704} kl 0.00111
+L0.1f {'defined': 0.2835, 'feasible': 0.2887, 'mass_all': 0.0265, 'sq_all': 0.0017, 'mass_defined': 0.0935, 'sq_defined': 0.0061, 'conc_defined': 0.6617, 'gap_defined': 0.0007, 'nsub_defined': 5.0184, 'rank_mean': 6.398} kl 0.00117
+H0.05f {'defined': 0.3103, 'feasible': 0.3199, 'mass_all': 0.0145, 'sq_all': 0.0006, 'mass_defined': 0.0467, 'sq_defined': 0.0018, 'conc_defined': 0.7791, 'gap_defined': 0.0004, 'nsub_defined': 2.3333, 'rank_mean': 5.3022} kl 0.00042
+L0.05f {'defined': 0.314, 'feasible': 0.3222, 'mass_all': 0.0148, 'sq_all': 0.0005, 'mass_defined': 0.0471, 'sq_defined': 0.0016, 'conc_defined': 0.6754, 'gap_defined': 0.0004, 'nsub_defined': 4.5261, 'rank_mean': 6.5471} kl 0.00044
+H0.15f {'defined': 0.2805, 'feasible': 0.2827, 'mass_all': 0.0394, 'sq_all': 0.0046, 'mass_defined': 0.1406, 'sq_defined': 0.0165, 'conc_defined': 0.7965, 'gap_defined': 0.0011, 'nsub_defined': 2.4164, 'rank_mean': 4.8716} kl 0.00284
+L0.15f {'defined': 0.2917, 'feasible': 0.2924, 'mass_all': 0.0415, 'sq_all': 0.0043, 'mass_defined': 0.1421, 'sq_defined': 0.0146, 'conc_defined': 0.6886, 'gap_defined': 0.0011, 'nsub_defined': 5.2628, 'rank_mean': 6.2865} kl 0.00273
+H0.1r {'defined': 0.2909, 'feasible': 0.2946, 'mass_all': 0.0271, 'sq_all': 0.0021, 'mass_defined': 0.093, 'sq_defined': 0.0071, 'conc_defined': 0.7779, 'gap_defined': 0.0007, 'nsub_defined': 2.4118, 'rank_mean': 4.8918} kl 0.00112
+L0.1r {'defined': 0.282, 'feasible': 0.2865, 'mass_all': 0.0264, 'sq_all': 0.0017, 'mass_defined': 0.0936, 'sq_defined': 0.0062, 'conc_defined': 0.6675, 'gap_defined': 0.0007, 'nsub_defined': 4.9947, 'rank_mean': 6.393} kl 0.00117
+0.1f mass_defined H-L -0.00038 mass_all H-L 0.00059 delta 0.020000000000000004
+0.05f mass_defined H-L -0.00039 mass_all H-L -0.0003 delta 0.010000000000000002
+0.15f mass_defined H-L -0.00152 mass_all H-L -0.00201 delta 0.03
+0.1r mass_defined H-L -0.00054 mass_all H-L 0.00068 delta 0.020000000000000004
+[primary] m*=0.1 fill: R -0.454 [-3.000, 3.341] | light dppl CI [-0.694, +0.665] | H-L +0.223 [-0.165, +0.489] | KL ratio 0.953 | mass H-L +0.00059 | R_m -0.444 -> no judgment: the interval of the light arm's Delta ppl includes 0
+[auxiliary] m*=0.05 fill: R 0.395 [-2.281, 3.420] | light dppl CI [-0.149, +0.641] | H-L -0.107 [-0.280, +0.030] | KL ratio 0.974 | mass H-L -0.00030 | R_m 0.403 -> no judgment: the interval of the light arm's Delta ppl includes 0
+[auxiliary] m*=0.15 fill: R 1.084 [-5.221, 11.927] | light dppl CI [-0.695, +1.680] | H-L +0.041 [-0.456, +0.490] | KL ratio 1.040 | mass H-L -0.00201 | R_m 1.139 -> no judgment: the interval of the light arm's Delta ppl includes 0
+[auxiliary] m*=0.1 renorm: R -0.457 [-4.869, 2.927] | light dppl CI [-0.678, +0.683] | H-L +0.201 [-0.185, +0.479] | KL ratio 0.952 | mass H-L +0.00068 | R_m -0.445 -> no judgment: the interval of the light arm's Delta ppl includes 0
+H0.05f: dppl +0.070 [-0.182, +0.388] kl 0.00042 agree 0.8879 defined 0.3103 mass_all 0.0145 mass_defined 0.0467 conc 0.779 gap 0.00037 nsub 2.33 rank 5.30
+H0.15f: dppl +0.524 [-0.241, +1.397] kl 0.00284 agree 0.8303 defined 0.2805 mass_all 0.0394 mass_defined 0.1406 conc 0.796 gap 0.00111 nsub 2.42 rank 4.87
+H0.1f: dppl +0.070 [-0.253, +0.526] kl 0.00111 agree 0.8515 defined 0.2909 mass_all 0.0271 mass_defined 0.0931 conc 0.778 gap 0.00073 nsub 2.41 rank 4.87
+H0.1r: dppl +0.063 [-0.270, +0.526] kl 0.00112 agree 0.8515 defined 0.2909 mass_all 0.0271 mass_defined 0.0930 conc 0.778 gap 0.00074 nsub 2.41 rank 4.89
+H9f: dppl +0.000 [+0.000, +0.000] kl 0.00000 agree 1.0000 defined 0.0000 mass_all 0.0000 mass_defined 0.0000 conc 0.000 gap 0.00000 nsub 0.00 rank 0.00
+L0.05f: dppl +0.177 [-0.149, +0.641] kl 0.00044 agree 0.8848 defined 0.3140 mass_all 0.0148 mass_defined 0.0471 conc 0.675 gap 0.00037 nsub 4.53 rank 6.55
+L0.15f: dppl +0.484 [-0.695, +1.680] kl 0.00273 agree 0.8091 defined 0.2917 mass_all 0.0415 mass_defined 0.1421 conc 0.689 gap 0.00111 nsub 5.26 rank 6.29
+L0.1f: dppl -0.153 [-0.694, +0.665] kl 0.00117 agree 0.8424 defined 0.2835 mass_all 0.0265 mass_defined 0.0935 conc 0.662 gap 0.00072 nsub 5.02 rank 6.40
+L0.1r: dppl -0.138 [-0.678, +0.683] kl 0.00117 agree 0.8424 defined 0.2820 mass_all 0.0264 mass_defined 0.0936 conc 0.668 gap 0.00073 nsub 4.99 rank 6.39
+L9r: dppl +0.000 [+0.000, +0.000] kl 0.00000 agree 1.0000 defined 0.0000 mass_all 0.0000 mass_defined 0.0000 conc 0.000 gap 0.00000 nsub 0.00 rank 0.00
+EXPB_ANALYSIS DONE 
+EXPB TEST PASSED

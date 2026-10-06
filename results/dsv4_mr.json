@@ -1,0 +1,8 @@
+{"model": "DeepSeek-V4-Flash", "E": 256, "K": 6, "layers": 43, "hash_layers": 3, "expert_mb": 13.369344, "active_params": 13.0e9,
+ "base": {"ppl": {"ALL": 3.3714, "ko_wiki": 3.6764, "en_wiki": 6.6457, "python_code": 1.9569, "chat_en": 3.2584, "chat_ko": 3.4808, "math_chat": 2.7079}, "top1": 0.72319},
+ "streams": {
+  "0.25:lru:B":  {"dppl": {"ALL": 4.974, "ko_wiki": 2.587, "en_wiki": 13.668, "python_code": 6.148, "chat_en": 0.88, "chat_ko": 1.565, "math_chat": 5.513}, "kl": 0.10128, "agree": 0.91255, "top1": 0.71391, "hit": 0.8082, "subst": 0.1594, "subst_mass": 0.132, "stall_exp": 11.221, "hash_stall_exp": 11.221, "bg_exp": 38.264, "stall_mb": 150.01, "bg_mb": 511.57},
+  "0.25:lru:C":  {"dppl": {"ALL": 0.205, "ko_wiki": 0.343, "en_wiki": 0.474, "python_code": 0.579, "chat_en": -0.269, "chat_ko": 0.286, "math_chat": -0.18}, "kl": 0.02083, "agree": 0.95258, "top1": 0.72196, "hit": 0.8082, "subst": 0.1116, "subst_mass": 0.0715, "stall_exp": 22.696, "hash_stall_exp": 11.221, "bg_exp": 26.777, "stall_mb": 303.43, "bg_mb": 357.99},
+  "0.125:lru:B": {"dppl": {"ALL": 13.936, "ko_wiki": 7.555, "en_wiki": 36.408, "python_code": 17.446, "chat_en": 9.948, "chat_ko": 5.767, "math_chat": 9.173}, "kl": 0.21308, "agree": 0.866, "top1": 0.698, "hit": 0.6736, "subst": 0.2895, "subst_mass": 0.2504, "stall_exp": 14.74, "hash_stall_exp": 14.74, "bg_exp": 69.481, "stall_mb": 197.07, "bg_mb": 928.92},
+  "0.125:lru:C": {"dppl": {"ALL": 0.28, "ko_wiki": 0.815, "en_wiki": 0.692, "python_code": 0.72, "chat_en": -0.699, "chat_ko": 0.525, "math_chat": -0.362}, "kl": 0.02897, "agree": 0.94552, "top1": 0.72219, "hit": 0.6738, "subst": 0.1904, "subst_mass": 0.1238, "stall_exp": 38.475, "hash_stall_exp": 14.74, "bg_exp": 45.688, "stall_mb": 514.38, "bg_mb": 610.82}
+ }}
